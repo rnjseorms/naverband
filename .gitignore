@@ -1,0 +1,15 @@
+venv/
+build/
+dist/
+__pycache__/
+*.pyc
+
+content/
+system/
+
+*.mp4
+frames*/
+editor_dom.html
+debug_dom.py
+
+.claude/

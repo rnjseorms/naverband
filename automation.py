@@ -1,0 +1,644 @@
+"""네이버 밴드 자동화 모듈 - Selenium 기반 브라우저 제어"""
+
+import os
+import time
+import random
+import subprocess
+import pyautogui
+pyautogui.FAILSAFE = False  # 자동화 중 마우스 모서리 이동 시 중단 방지
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.edge.options import Options as EdgeOptions
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import (
+    TimeoutException, NoSuchElementException,
+    ElementClickInterceptedException, UnexpectedAlertPresentException,
+    NoAlertPresentException
+)
+
+BAND_LOGIN_URL = "https://auth.band.us/login_page"
+
+
+class BandAutomation:
+    """네이버 밴드 자동 글쓰기 클래스"""
+
+    def __init__(self, browser_type="chrome", incognito=False, system_delay=1.5, log_callback=None):
+        self.driver = None
+        self.browser_type = browser_type
+        self.incognito = incognito
+        self.system_delay = system_delay
+        self.log = log_callback or print
+
+    # ──────────────────────────────────────────────
+    #  유틸
+    # ──────────────────────────────────────────────
+    def _dismiss_alert(self):
+        """Alert가 있으면 닫는다."""
+        try:
+            alert = self.driver.switch_to.alert
+            alert_text = alert.text
+            alert.accept()
+            self.log(f"알림 닫음: {alert_text}")
+            return True
+        except (NoAlertPresentException, Exception):
+            return False
+
+    def _safe_click(self, element):
+        """클릭 시도. 실패하면 JS로 클릭."""
+        try:
+            element.click()
+        except Exception:
+            self.driver.execute_script("arguments[0].click();", element)
+
+    # ──────────────────────────────────────────────
+    #  브라우저
+    # ──────────────────────────────────────────────
+    def start_browser(self):
+        """브라우저를 시작합니다."""
+        try:
+            if self.browser_type == "chrome":
+                options = ChromeOptions()
+                options.add_argument("--start-maximized")
+                options.add_argument("--disable-blink-features=AutomationControlled")
+                options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                options.add_experimental_option("useAutomationExtension", False)
+                if self.incognito:
+                    options.add_argument("--incognito")
+                self.driver = webdriver.Chrome(options=options)
+            else:
+                options = EdgeOptions()
+                options.add_argument("--start-maximized")
+                options.add_argument("--disable-blink-features=AutomationControlled")
+                options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                options.add_experimental_option("useAutomationExtension", False)
+                if self.incognito:
+                    options.add_argument("--inprivate")
+                self.driver = webdriver.Edge(options=options)
+
+            self.driver.execute_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            self.log("브라우저가 시작되었습니다.")
+            return True
+        except Exception as e:
+            self.log(f"브라우저 시작 실패: {e}")
+            return False
+
+    def connect_gologin(self, debugger_address):
+        """GoLogin 프로필의 debugger_address로 Selenium을 연결합니다."""
+        try:
+            options = ChromeOptions()
+            options.add_experimental_option("debuggerAddress", debugger_address)
+            self.driver = webdriver.Chrome(options=options)
+            self.driver.maximize_window()
+            self.log(f"GoLogin 프로필 연결 완료: {debugger_address}")
+            return True
+        except Exception as e:
+            self.log(f"GoLogin 연결 실패: {e}")
+            return False
+
+    def disconnect(self):
+        """Selenium 연결만 해제합니다 (GoLogin 프로필은 유지)."""
+        if self.driver:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            self.driver = None
+
+    def open_login_page(self):
+        """로그인 페이지를 엽니다."""
+        if not self.driver:
+            if not self.start_browser():
+                return False
+        try:
+            self.driver.get(BAND_LOGIN_URL)
+            self.log("로그인 페이지가 열렸습니다. 수동으로 로그인해주세요.")
+            return True
+        except Exception as e:
+            self.log(f"로그인 페이지 열기 실패: {e}")
+            return False
+
+    # ──────────────────────────────────────────────
+    #  밴드 주소 가져오기
+    # ──────────────────────────────────────────────
+    def fetch_band_urls(self):
+        """가입된 밴드 URL 목록을 가져옵니다."""
+        if not self.driver:
+            self.log("브라우저가 시작되지 않았습니다.")
+            return []
+        try:
+            self.driver.get("https://band.us/bands")
+            time.sleep(self.system_delay * 3)
+
+            # 스크롤하여 모두 로드
+            last_count = 0
+            for _ in range(20):
+                links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/band/']")
+                if len(links) == last_count:
+                    break
+                last_count = len(links)
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(self.system_delay)
+
+            # URL 추출
+            links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/band/']")
+            seen = set()
+            band_urls = []
+            for link in links:
+                href = link.get_attribute("href")
+                if href and "/band/" in href:
+                    parts = href.split("/band/")
+                    if len(parts) > 1:
+                        band_id = parts[1].split("/")[0].split("?")[0]
+                        if band_id and band_id.isdigit() and band_id not in seen:
+                            seen.add(band_id)
+                            band_urls.append(f"https://band.us/band/{band_id}")
+
+            self.log(f"총 {len(band_urls)}개의 밴드를 찾았습니다.")
+            return band_urls
+        except Exception as e:
+            self.log(f"밴드 주소 가져오기 실패: {e}")
+            return []
+
+    # ──────────────────────────────────────────────
+    #  글쓰기 메인 흐름
+    # ──────────────────────────────────────────────
+    def write_post(self, band_url, text_content, image_paths=None,
+                   image_first=False, board_index=0, random_phrase="",
+                   system_delay=1.5):
+        """
+        밴드 페이지 접속 → 글쓰기 버튼 클릭 → 사진 첨부 → 텍스트 입력 → 게시
+        흐름: 사진버튼 클릭 → 이미지 선택 → 첨부하기 → 텍스트 입력 → 게시
+        """
+        if not self.driver:
+            self.log("브라우저가 시작되지 않았습니다.")
+            return False
+
+        band_id = band_url.split("/band/")[1].split("/")[0].split("#")[0].split("?")[0]
+        band_page = f"https://band.us/band/{band_id}"
+
+        try:
+            # ① 밴드 페이지 접속
+            self._dismiss_alert()
+            self.driver.get(band_page)
+            time.sleep(system_delay * 2)
+            self._dismiss_alert()
+
+            # ② "글쓰기" 버튼 찾아서 클릭
+            if not self._click_write_button(system_delay):
+                self.log(f"글쓰기 버튼 없음 (스킵): {band_id}")
+                return False
+
+            time.sleep(system_delay * 2)
+
+            # ③ 에디터가 열렸는지 확인 (placeholder: "새로운 소식을 남겨보세요.")
+            editor_found = False
+            editor_selectors = [
+                ".cke_editable[contenteditable='true']",
+                "[contenteditable='true'].contentEditor",
+                "[contenteditable='true']",
+            ]
+            for sel in editor_selectors:
+                try:
+                    WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                    )
+                    editor_found = True
+                    break
+                except TimeoutException:
+                    continue
+
+            if not editor_found:
+                self.log(f"에디터 로드 실패 (스킵): {band_id}")
+                return False
+
+            # ④ 이미지 업로드 (사진 버튼 클릭 → 파일 대화상자 → 첨부하기)
+            if image_paths:
+                self._upload_images(image_paths, system_delay)
+                time.sleep(system_delay * 2)
+
+            # ⑥ 텍스트 입력
+            self._write_text(text_content, random_phrase, system_delay)
+            time.sleep(system_delay * 2)
+
+            # ⑦ "게시" 버튼 클릭
+            if self._click_submit(system_delay):
+                return True
+            else:
+                self.log(f"게시 실패: {band_id}")
+                return False
+
+        except UnexpectedAlertPresentException:
+            self._dismiss_alert()
+            self.log(f"알림 발생, 스킵: {band_id}")
+            return False
+        except Exception as e:
+            self._dismiss_alert()
+            self.log(f"글쓰기 실패 ({band_id}): {e}")
+            return False
+
+    # ──────────────────────────────────────────────
+    #  ② 글쓰기 버튼 클릭
+    # ──────────────────────────────────────────────
+    def _click_write_button(self, system_delay):
+        """밴드 페이지에서 '글쓰기' 버튼을 찾아 클릭합니다."""
+
+        # 방법 1: XPath로 "글쓰기" 텍스트가 포함된 버튼/링크 찾기
+        xpath_selectors = [
+            "//button[contains(text(),'글쓰기')]",
+            "//a[contains(text(),'글쓰기')]",
+            "//span[contains(text(),'글쓰기')]/parent::*",
+            "//div[contains(text(),'글쓰기')]",
+        ]
+        for xpath in xpath_selectors:
+            try:
+                btn = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, xpath))
+                )
+                self._safe_click(btn)
+                self.log("글쓰기 버튼 클릭")
+                return True
+            except (TimeoutException, NoSuchElementException):
+                continue
+
+        # 방법 2: CSS 셀렉터로 글쓰기 관련 버튼 찾기
+        css_selectors = [
+            "a.postWriteBtn",
+            "button.postWriteBtn",
+            "a._btnPostWrite",
+            "button._btnPostWrite",
+            ".postWrite a",
+            ".writeBtn",
+            "a[href*='post/create']",
+        ]
+        for sel in css_selectors:
+            try:
+                btn = WebDriverWait(self.driver, 3).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
+                )
+                self._safe_click(btn)
+                self.log("글쓰기 버튼 클릭")
+                return True
+            except (TimeoutException, NoSuchElementException):
+                continue
+
+        # 방법 3: 에디터 영역 직접 클릭 (이미 글쓰기 입력창이 보이는 경우)
+        try:
+            editor = self.driver.find_element(
+                By.CSS_SELECTOR,
+                ".cke_editable[contenteditable='true'], "
+                "[contenteditable='true'].contentEditor"
+            )
+            self._safe_click(editor)
+            self.log("에디터 영역 직접 클릭")
+            return True
+        except NoSuchElementException:
+            pass
+
+        return False
+
+    # ──────────────────────────────────────────────
+    #  ④ 게시판 선택
+    # ──────────────────────────────────────────────
+    def _select_board_if_exists(self, board_index, system_delay):
+        """에디터 팝업 내부의 게시판 선택 드롭다운이 있으면 게시판을 선택합니다."""
+        try:
+            # 먼저 에디터 팝업 컨테이너를 찾기 (에디터 안에서만 검색하기 위해)
+            editor_popup = self.driver.execute_script("""
+                // contenteditable 에디터를 포함하는 가장 가까운 팝업/다이얼로그 찾기
+                var editor = document.querySelector('[contenteditable="true"]');
+                if (!editor) return null;
+                var parent = editor;
+                for (var i = 0; i < 20; i++) {
+                    parent = parent.parentElement;
+                    if (!parent) break;
+                    var cls = (parent.className || '').toLowerCase();
+                    var role = parent.getAttribute('role') || '';
+                    if (cls.indexOf('layer') >= 0 || cls.indexOf('popup') >= 0 ||
+                        cls.indexOf('modal') >= 0 || cls.indexOf('dialog') >= 0 ||
+                        cls.indexOf('write') >= 0 || role === 'dialog') {
+                        return parent;
+                    }
+                }
+                // 못 찾으면 에디터에서 10단계 위 부모 반환
+                parent = editor;
+                for (var j = 0; j < 10; j++) {
+                    if (parent.parentElement) parent = parent.parentElement;
+                }
+                return parent;
+            """)
+
+            if not editor_popup:
+                return
+
+            # 에디터 팝업 내부에서 "게시판 선택" 텍스트가 있는 요소 찾기
+            btn = None
+            try:
+                candidates = editor_popup.find_elements(By.XPATH,
+                    ".//*[contains(text(),'게시판 선택')]")
+                for c in candidates:
+                    try:
+                        if c.is_displayed():
+                            btn = c
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            if not btn:
+                # 게시판 선택이 없는 밴드 → 정상, 스킵
+                return
+
+            self.log("게시판 선택 드롭다운 발견 (에디터 내부)")
+            self._safe_click(btn)
+            time.sleep(system_delay)
+
+            # 목록에서 선택 (board_index: 0이면 첫 번째 게시판)
+            target_index = max(board_index, 1) - 1  # 0-based
+            items = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                ".layerPopup li, .uSelectLayer li, ul.boardList li, "
+                "[class*='boardList'] li, [class*='CategoryList'] li, "
+                "[role='listbox'] li, [role='option'], "
+                ".uDropdownLayer li, .dropdownList li"
+            )
+            if items:
+                try:
+                    visible_items = [item for item in items if item.is_displayed()]
+                except Exception:
+                    visible_items = []
+                if not visible_items:
+                    visible_items = items
+                if target_index < len(visible_items):
+                    self._safe_click(visible_items[target_index])
+                    self.log(f"게시판 선택: {target_index + 1}번째 항목")
+                else:
+                    self._safe_click(visible_items[0])
+                    self.log("게시판 선택: 첫 번째 항목 (기본)")
+                time.sleep(system_delay)
+            else:
+                self.log("게시판 목록을 찾을 수 없습니다.")
+        except Exception as e:
+            self.log(f"게시판 선택 실패: {e}")
+
+    # ──────────────────────────────────────────────
+    #  ⑤-1 텍스트 입력
+    # ──────────────────────────────────────────────
+    def _write_text(self, text_content, random_phrase, system_delay, preserve_images=False):
+        """에디터에 텍스트를 입력합니다.
+        이미지 아래에 텍스트 → (랜덤문구 있으면) 한줄 공백 후 랜덤문구."""
+        try:
+            # 에디터 찾기
+            editor = None
+            for sel in [".cke_editable[contenteditable='true']",
+                        "[contenteditable='true'].contentEditor",
+                        "[contenteditable='true']"]:
+                try:
+                    editor = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
+                    break
+                except TimeoutException:
+                    continue
+
+            if not editor:
+                self.log("에디터를 찾을 수 없습니다.")
+                return
+
+            # 텍스트 조합: 본문 + (한줄 공백 + 랜덤문구)
+            full_text = text_content
+            if random_phrase:
+                full_text += "\n\n" + random_phrase
+
+            # 방법 1: ActionChains로 에디터 맨 끝으로 이동 → 키보드 입력
+            try:
+                # 에디터 포커스 (ActionChains 사용)
+                ActionChains(self.driver).move_to_element(editor).click().perform()
+                time.sleep(0.5)
+
+                # Ctrl+End로 커서를 에디터 맨 끝으로 이동 (이미지 뒤)
+                ActionChains(self.driver).key_down(Keys.CONTROL).send_keys(
+                    Keys.END).key_up(Keys.CONTROL).perform()
+                time.sleep(0.3)
+
+                # Enter로 이미지 뒤에 새 줄 시작
+                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                time.sleep(0.3)
+
+                # 텍스트 줄 단위 입력 (ActionChains 사용)
+                lines = full_text.split("\n")
+                for i, line in enumerate(lines):
+                    if line:
+                        ActionChains(self.driver).send_keys(line).perform()
+                    if i < len(lines) - 1:
+                        ActionChains(self.driver).key_down(Keys.SHIFT).send_keys(
+                            Keys.ENTER).key_up(Keys.SHIFT).perform()
+                    time.sleep(0.05)
+
+                time.sleep(system_delay)
+                self.log("텍스트 입력 완료")
+                return
+            except Exception as e:
+                self.log(f"ActionChains 입력 실패 ({e}), JS 입력으로 전환")
+
+            # 방법 2: JavaScript로 텍스트 삽입 (기존 내용 보존 - 이미지 포함)
+            html_text = full_text.replace("\n", "<br>")
+            self.driver.execute_script("""
+                var editor = arguments[0];
+                editor.focus();
+                // 기존 내용(이미지 포함) 뒤에 텍스트 추가
+                var existing = editor.innerHTML || '';
+                editor.innerHTML = existing + '<br>' + arguments[1];
+                // input 이벤트 발생시켜서 Band이 인식하도록
+                var event = new Event('input', { bubbles: true });
+                editor.dispatchEvent(event);
+                // 커서를 맨 끝으로
+                var range = document.createRange();
+                var sel = window.getSelection();
+                range.selectNodeContents(editor);
+                range.collapse(false);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            """, editor, html_text)
+            time.sleep(system_delay)
+            self.log("텍스트 입력 완료 (JS)")
+
+        except Exception as e:
+            self.log(f"텍스트 입력 실패: {e}")
+
+    # ──────────────────────────────────────────────
+    #  ⑤ 이미지 업로드
+    #  사람처럼: 사진 버튼 클릭 → 파일 대화상자 → 첨부하기
+    # ──────────────────────────────────────────────
+    def _upload_images(self, image_paths, system_delay):
+        """사진 버튼 클릭 → 네이티브 파일 대화상자 → 첨부하기."""
+        if not image_paths:
+            return
+
+        try:
+            abs_paths = [os.path.abspath(p) for p in image_paths]
+
+            # ── 1단계: 사진 첨부용 file input 찾기 (label._btnAttachPhoto 안의 input) ──
+            file_input = self.driver.execute_script("""
+                // 방법 1: _btnAttachPhoto label 안의 file input (정확한 셀렉터)
+                var label = document.querySelector('label._btnAttachPhoto');
+                if (label) {
+                    var input = label.querySelector('input[type="file"]');
+                    if (input) return input;
+                }
+                // 방법 2: name="attachment"이고 accept="image/*"인 file input
+                var inputs = document.querySelectorAll('input[type="file"][name="attachment"]');
+                for (var i = 0; i < inputs.length; i++) {
+                    if ((inputs[i].accept || '').indexOf('image') >= 0) return inputs[i];
+                }
+                // 방법 3: accept에 image가 있는 아무 file input
+                var allInputs = document.querySelectorAll('input[type="file"]');
+                for (var i = 0; i < allInputs.length; i++) {
+                    if ((allInputs[i].accept || '').indexOf('image') >= 0) return allInputs[i];
+                }
+                return null;
+            """)
+
+            if not file_input:
+                self.log("사진 file input을 찾을 수 없습니다.")
+                return
+
+            self.log("사진 file input 발견 (label._btnAttachPhoto)")
+
+            # ── 2단계: file input에 직접 파일 경로 전달 ──
+            file_input.send_keys(abs_paths[0])
+            self.log(f"이미지 파일 전달 완료: {abs_paths[0]}")
+
+            # ── 4단계: "사진 올리기" 팝업 → "첨부하기" 대기 & 클릭 ──
+            time.sleep(system_delay * 3)
+
+            attach_btn = None
+            for i in range(20):
+                try:
+                    btns = self.driver.find_elements(
+                        By.XPATH, "//button[contains(text(),'첨부하기')]")
+                    for btn in btns:
+                        try:
+                            if btn.is_displayed() and btn.is_enabled():
+                                attach_btn = btn
+                                break
+                        except Exception:
+                            continue
+                    if attach_btn:
+                        self.log(f"첨부하기 버튼 발견 ({i+1}초)")
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+
+            if attach_btn:
+                time.sleep(1)
+                try:
+                    self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", attach_btn)
+                    time.sleep(0.3)
+                    ActionChains(self.driver).move_to_element(attach_btn).pause(0.3).click().perform()
+                    self.log("첨부하기 클릭 완료")
+                except Exception as e1:
+                    self.log(f"ActionChains 실패 ({e1}), JS 클릭")
+                    self.driver.execute_script("arguments[0].click();", attach_btn)
+
+                time.sleep(system_delay * 3)
+                self._wait_popup_close(system_delay)
+                self.log("이미지 업로드 완료")
+            else:
+                self.log("첨부하기 버튼을 찾지 못했습니다.")
+
+        except Exception as e:
+            self.log(f"이미지 업로드 실패: {e}")
+
+    def _wait_popup_close(self, system_delay):
+        """사진 올리기 팝업이 닫힐 때까지 대기합니다."""
+        for _ in range(10):
+            # 팝업이 아직 열려있는지 확인
+            popups = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                ".layerPopup, .uModal, .popupLayer")
+            visible_popup = False
+            for popup in popups:
+                try:
+                    if popup.is_displayed():
+                        visible_popup = True
+                        break
+                except Exception:
+                    pass
+            if not visible_popup:
+                return True
+            time.sleep(0.5)
+        return False
+
+    # ──────────────────────────────────────────────
+    #  ⑥ 게시 버튼
+    # ──────────────────────────────────────────────
+    def _click_submit(self, system_delay):
+        """에디터 우하단의 '게시' 버튼을 클릭합니다."""
+        # 방법 1: _btnSubmitPost 클래스
+        for sel in ["button._btnSubmitPost", "button.uButton._btnSubmitPost"]:
+            try:
+                btn = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel)))
+                self._safe_click(btn)
+                self.log("게시 버튼 클릭")
+                time.sleep(system_delay * 3)
+                self._dismiss_alert()
+                return True
+            except TimeoutException:
+                continue
+
+        # 방법 2: "게시" 텍스트 버튼 (정확히 일치 + 포함)
+        submit_xpaths = [
+            "//button[text()='게시']",
+            "//button[normalize-space(text())='게시']",
+            "//button[contains(text(),'게시')]",
+            "//span[text()='게시']/parent::button",
+            "//button[contains(@class,'submit') or contains(@class,'Submit')]",
+        ]
+        for xpath in submit_xpaths:
+            try:
+                btns = self.driver.find_elements(By.XPATH, xpath)
+                for btn in btns:
+                    if btn.is_displayed():
+                        self._safe_click(btn)
+                        self.log("게시 버튼 클릭")
+                        time.sleep(system_delay * 3)
+                        self._dismiss_alert()
+                        return True
+            except Exception:
+                continue
+
+        # 방법 3: "완료", "올리기" 텍스트 (fallback)
+        try:
+            btn = WebDriverWait(self.driver, 3).until(
+                EC.element_to_be_clickable((By.XPATH,
+                    "//button[contains(text(),'완료') or contains(text(),'올리기')]"
+                )))
+            self._safe_click(btn)
+            self.log("게시 버튼 클릭 (완료/올리기)")
+            time.sleep(system_delay * 3)
+            self._dismiss_alert()
+            return True
+        except TimeoutException:
+            self.log("게시 버튼을 찾을 수 없습니다.")
+            return False
+
+    # ──────────────────────────────────────────────
+    #  종료
+    # ──────────────────────────────────────────────
+    def close(self):
+        """브라우저를 종료합니다."""
+        if self.driver:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            self.driver = None
+            self.log("브라우저가 종료되었습니다.")
