@@ -1,3 +1,9 @@
 selenium>=4.15.0
 Pillow>=10.0.0
 pyautogui>=0.9.54
+customtkinter>=5.2.0
+requests>=2.31.0
+gologin>=2026.6.24
+
+# exe 빌드용
+pyinstaller>=6.0.0

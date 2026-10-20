@@ -1,11 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
+
+# customtkinter 테마/아이콘, gologin 리소스를 exe에 포함
+ctk_datas, ctk_bins, ctk_hidden = collect_all('customtkinter')
+gl_datas, gl_bins, gl_hidden = collect_all('gologin')
 
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
-    datas=[('system', 'system'), ('content', 'content')],
+    binaries=ctk_bins + gl_bins,
+    datas=ctk_datas + gl_datas,
     hiddenimports=[
         'customtkinter',
         'selenium',
@@ -30,7 +35,8 @@ a = Analysis(
         'selenium.common.exceptions',
         'gologin',
         'requests',
-    ],
+        'pyautogui',
+    ] + ctk_hidden + gl_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
