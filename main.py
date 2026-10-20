@@ -2,7 +2,6 @@
 
 import os
 import sys
-import json
 import time
 import random
 import threading
@@ -26,6 +25,40 @@ RANDOM_PHRASES_FILE = os.path.join(SYSTEM_DIR, "random_phrases.txt")
 os.makedirs(SYSTEM_DIR, exist_ok=True)
 os.makedirs(CONTENT_DIR, exist_ok=True)
 
+# '_'로 시작하는 글 폴더는 글쓰기에서 제외 (샘플/보관용)
+SKIP_FOLDER_PREFIX = "_"
+SAMPLE_DIR = os.path.join(CONTENT_DIR, "_sample")
+SAMPLE_TEXT = """여기에 밴드에 올릴 본문을 적어주세요.
+
+[글 폴더 만드는 방법]
+1. 이 _sample 폴더를 복사해서 이름을 바꿉니다. (예: 01_가을이벤트)
+   ※ 이름이 _ 로 시작하는 폴더는 올라가지 않습니다. 이 샘플 폴더도 올라가지 않습니다.
+2. 이 txt 파일 내용을 실제 올릴 글로 바꿉니다. (txt는 폴더당 1개)
+3. 함께 올릴 이미지를 폴더에 넣습니다. (jpg, png, gif, webp 등)
+"""
+
+
+def ensure_sample_content():
+    """글 폴더가 하나도 없으면(첫 실행) 예시용 _sample 폴더를 만듭니다."""
+    if any(os.path.isdir(os.path.join(CONTENT_DIR, n)) for n in os.listdir(CONTENT_DIR)):
+        return
+    try:
+        os.makedirs(SAMPLE_DIR, exist_ok=True)
+        with open(os.path.join(SAMPLE_DIR, "글.txt"), "w", encoding="utf-8") as f:
+            f.write(SAMPLE_TEXT)
+
+        from PIL import Image, ImageDraw
+        img = Image.new("RGB", (800, 600), "#533483")
+        draw = ImageDraw.Draw(img)
+        draw.rectangle((40, 40, 760, 560), outline="#e0e0e0", width=6)
+        draw.text((400, 300), "SAMPLE IMAGE", fill="#e0e0e0", anchor="mm", font_size=64)
+        img.save(os.path.join(SAMPLE_DIR, "sample.png"))
+    except Exception:
+        pass  # 샘플은 없어도 동작에 지장 없음
+
+
+ensure_sample_content()
+
 from automation import BandAutomation
 from image_processor import compress_all_content_folders
 
@@ -42,6 +75,185 @@ COLOR_SUCCESS = "#2ecc71"
 COLOR_DANGER = "#e74c3c"
 COLOR_TEXT = "#e0e0e0"
 COLOR_MUTED = "#7f8c8d"
+COLOR_STEP = "#a29bfe"
+COLOR_HELP = "#3d4b6b"
+COLOR_HELP_HOVER = "#55658c"
+
+# 작업 순서 번호
+STEP_NUMBERS = "①②③④⑤⑥⑦⑧⑨⑩"
+STEP_BADGE_WIDTH = 34
+
+# ? 버튼 도움말 (키: (제목, 내용))
+HELP_TEXTS = {
+    "content_folder": ("① 글작성 폴더 열기",
+        "올릴 글을 넣어두는 content 폴더를 엽니다.\n\n"
+        "[만드는 방법]\n"
+        "1. content 폴더 안에 글 1개당 폴더 1개를 만듭니다.\n"
+        "   예) 01_가을이벤트, 02_신상품안내\n"
+        "2. 각 폴더에 본문 .txt 파일 1개를 넣습니다.\n"
+        "   (메모장에서 UTF-8로 저장, txt가 여러 개면 이름순 마지막 1개만 사용)\n"
+        "3. 함께 올릴 이미지(jpg, png, gif, webp 등)를 같은 폴더에 넣습니다.\n\n"
+        "폴더는 이름순으로 하나씩 돌아가며 사용됩니다.\n"
+        "(⑥의 '랜덤 글작성'을 켜면 무작위 순서)\n\n"
+        "※ 처음 실행하면 예시용 _sample 폴더가 만들어져 있습니다. 복사해서 쓰세요.\n"
+        "※ 이름이 _ 로 시작하는 폴더는 올라가지 않습니다. (샘플·보관용)"),
+    "process_images": ("② 이미지 가공 (선택)",
+        "content 안 모든 폴더의 이미지 중 500KB가 넘는 것을\n"
+        "최대 1280px, JPEG 형식으로 줄입니다.\n\n"
+        "※ 원본 파일에 그대로 덮어씁니다. 원본이 필요하면 따로 복사해 두세요.\n"
+        "※ 이미지 업로드가 느리거나 실패할 때 사용하세요."),
+    "edit_random_phrases": ("③ 랜덤문구 작성 (선택)",
+        "메모장으로 랜덤문구 파일을 엽니다.\n\n"
+        "한 줄에 문구 하나씩 적고 저장하세요.\n"
+        "글을 올릴 때마다 이 중 한 줄이 무작위로 본문에 덧붙습니다.\n\n"
+        "같은 글을 여러 밴드에 올릴 때 내용이 완전히 똑같아지는 것을 막아줍니다."),
+    "random_phrase": ("랜덤문구 추가",
+        "체크하면 글을 올릴 때마다 랜덤문구 중 한 줄을 본문에 덧붙입니다.\n"
+        "체크를 끄면 txt 내용만 그대로 올립니다."),
+    "browser": ("④ 브라우저 선택",
+        "로그인과 글쓰기에 사용할 브라우저를 고릅니다.\n"
+        "PC에 설치된 브라우저를 선택하세요.\n\n"
+        "시크릿: 기록이 남지 않는 창으로 엽니다.\n"
+        "체크하면 프로그램을 켤 때마다 다시 로그인해야 합니다.\n\n"
+        "※ 로그인 하기를 누르기 전에 선택해야 적용됩니다."),
+    "login": ("④ 로그인 하기",
+        "선택한 브라우저로 밴드 로그인 페이지를 엽니다.\n"
+        "열린 브라우저에서 직접 로그인해주세요.\n\n"
+        "※ 로그인 후 브라우저 창을 닫지 마세요. 매크로가 이 창으로 글을 씁니다.\n"
+        "※ 'GoLogin 멀티 프로필 사용'이 켜져 있으면 선택한 GoLogin 프로필 브라우저들이 열립니다."),
+    "fetch_band_urls": ("⑤ 밴드주소 가져오기",
+        "로그인한 계정이 가입한 밴드 목록을 읽어\n"
+        "아래 '밴드 URL 목록'에 자동으로 채웁니다.\n"
+        "'방문이 뜸한 밴드' 폴더 안의 밴드도 함께 가져옵니다.\n"
+        "광고(AD) 카드와 '이런 밴드는 어때요' 추천 밴드는 제외됩니다.\n\n"
+        "※ ④에서 로그인을 마친 뒤에 눌러주세요.\n"
+        "※ 기존 목록은 지워지고 새로 채워집니다."),
+    "band_urls": ("밴드 URL 목록",
+        "글을 올릴 밴드 주소 목록입니다. 한 줄에 하나씩 적습니다.\n"
+        "예) https://band.us/band/12345678\n\n"
+        "⑤로 자동으로 채우거나 직접 붙여넣을 수 있습니다.\n"
+        "글을 올리고 싶지 않은 밴드는 줄을 지우면 됩니다.\n\n"
+        "※ https://band.us/band/ 로 시작하는 줄만 사용됩니다."),
+    "delay": ("글쓰기 딜레이 (초)",
+        "한 밴드에 글을 올린 뒤 다음 밴드로 넘어가기 전 기다리는 시간입니다.\n\n"
+        "숫자 하나(예: 1000) 또는 범위(예: 150~250)로 적습니다.\n"
+        "범위로 적으면 그 사이에서 매번 무작위로 정해집니다.\n\n"
+        "※ 너무 짧으면 밴드에서 스팸으로 막힐 수 있습니다."),
+    "repeat_count": ("총 반복 횟수 (회)",
+        "전체 과정을 몇 번 반복할지 정합니다.\n\n"
+        "1회 = 글 폴더 1개를 골라 URL 목록의 모든 밴드에 올리기\n"
+        "회차마다 다음 글 폴더로 넘어갑니다."),
+    "system_delay": ("시스템 딜레이 (초)",
+        "버튼 클릭·페이지 이동 사이에 기다리는 기본 시간입니다.\n\n"
+        "인터넷이나 PC가 느려서 중간에 실패가 잦으면 값을 올려주세요.\n"
+        "(예: 1.5 → 2.5)"),
+    "final_delay": ("최종 딜레이 (분)",
+        "한 회차(모든 밴드에 1번씩 올리기)를 마친 뒤\n"
+        "다음 회차를 시작하기 전 기다리는 시간입니다."),
+    "board_index": ("게시판 선택 (번)",
+        "글쓰기 화면에서 게시판을 고르는 밴드라면\n"
+        "목록에서 몇 번째 게시판에 올릴지 정합니다.\n\n"
+        "1 = 첫 번째 게시판, 2 = 두 번째 게시판 ...\n"
+        "게시판 선택이 없는 밴드에서는 무시됩니다."),
+    "image_first": ("이미지 먼저",
+        "체크하면 이미지를 먼저 올린 뒤 본문을 입력합니다.\n"
+        "체크를 끄면 본문을 먼저 입력하고 이미지를 올립니다."),
+    "random_post": ("랜덤 글작성",
+        "체크하면 회차마다 content의 글 폴더 중 하나를 무작위로 고릅니다.\n"
+        "체크를 끄면 폴더 이름순으로 차례대로 사용합니다."),
+    "start_stop": ("⑦ 시작 / 중지",
+        "시작: 설정대로 URL 목록의 밴드에 글을 올립니다.\n"
+        "진행 상황은 아래 '실행 로그'에 표시됩니다.\n\n"
+        "중지: 진행 중인 작업을 멈춥니다.\n"
+        "(지금 쓰는 글은 마무리될 때까지 기다릴 수 있습니다)\n\n"
+        "시작 전 확인할 것\n"
+        "- ① content에 글 폴더가 있는지\n"
+        "- ④ 로그인이 되어 있는지\n"
+        "- URL 목록에 밴드 주소가 있는지"),
+    "timer": ("작동시간 설정",
+        "체크하면 지정한 시간대에만 글을 올립니다.\n"
+        "시간대 밖이면 다음 시작 시각까지 기다렸다가 자동으로 이어갑니다.\n\n"
+        "예) 22시 ~ 06시 처럼 자정을 넘는 시간대도 가능합니다."),
+    "capture_area": ("영역 캡처",
+        "3초 뒤 전체 화면을 캡처해 system 폴더에 저장합니다.\n"
+        "(파일 이름: 선택한 브라우저_loading.png)\n\n"
+        "※ 현재 글쓰기 동작에는 사용되지 않습니다. 일반 사용 시 누를 필요가 없습니다."),
+    "gologin": ("GoLogin 멀티 프로필",
+        "여러 계정을 동시에 돌릴 때 사용하는 기능입니다. 일반 사용 시에는 끄세요.\n\n"
+        "사용 순서\n"
+        "1. 체크하면 나타나는 칸에 GoLogin API Key 입력\n"
+        "2. 프로필 가져오기 → 사용할 프로필 선택\n"
+        "3. ④ 로그인 하기 → 열린 브라우저마다 로그인\n"
+        "4. ⑦ 시작 → 모든 프로필이 동시에 글을 올림\n\n"
+        "[프로필별 동작]\n"
+        "- 시작하면 프로필마다 자기 계정의 가입 밴드를 직접 가져와 거기에만 씁니다.\n"
+        "  (밴드 URL 목록과 ⑤ 버튼은 사용하지 않습니다)\n"
+        "- 같은 회차에 프로필끼리 같은 글을 쓰지 않도록 시작 글 폴더를 한 칸씩 엇갈립니다.\n"
+        "  예) 프로필1은 폴더1부터, 프로필2는 폴더2부터 ...\n"
+        "  ※ 글 폴더 수가 프로필 수보다 적으면 일부 프로필은 같은 글로 시작합니다."),
+    "gologin_dedupe": ("겹치는 밴드는 중복 게시 발행 안함",
+        "여러 프로필(계정)이 같은 밴드에 함께 가입해 있을 때,\n"
+        "그 밴드에는 한 프로필만 글을 쓰도록 나눠 맡깁니다.\n"
+        "같은 밴드에 여러 계정의 글이 몰리는 것을 막아줍니다.\n\n"
+        "겹치는 밴드는 맡은 밴드가 적은 프로필에 먼저 배정됩니다.\n\n"
+        "체크를 끄면 각 프로필이 자기 가입 밴드 전부에 씁니다."),
+    "gologin_profiles": ("프로필 가져오기",
+        "입력한 API Key로 GoLogin 계정의 프로필 목록을 불러옵니다.\n"
+        "체크된 프로필만 실행됩니다.\n\n"
+        "API Key는 GoLogin 웹사이트 > Settings > API 에서 확인할 수 있습니다."),
+}
+
+
+def gologin_profile_problem(gl):
+    """GoLogin 브라우저를 띄우기 전에 프로필 정보를 확인합니다.
+
+    gologin 라이브러리는 서버 응답에 브라우저 버전(userAgent의 Chrome/xxx)이 없으면
+    "invalid literal for int()" 오류만 내고 실제 사유를 숨깁니다.
+    먼저 응답을 받아보고, 문제가 있으면 서버가 보낸 사유를 문자열로 반환합니다. 정상이면 None.
+    """
+    try:
+        data = gl.getProfile()
+    except Exception as e:
+        return f"프로필 정보를 받지 못했습니다 ({e})"
+
+    user_agent = (data.get("navigator") or {}).get("userAgent", "")
+    if "Chrome/" in user_agent:
+        return None
+
+    message = data.get("message") or data.get("error")
+    if message:
+        status = data.get("statusCode")
+        return f"GoLogin 서버 응답: {message}" + (f" (코드 {status})" if status else "")
+    if not user_agent:
+        return ("프로필에 브라우저 정보(userAgent)가 비어 있습니다. "
+                "GoLogin 앱에서 이 프로필을 한 번 열었다 닫거나, 지문(fingerprint)을 새로 고쳐주세요. "
+                f"[응답 항목: {', '.join(list(data)[:12])}]")
+    return f"브라우저 버전을 알 수 없는 userAgent입니다: {user_agent[:80]}"
+
+
+def assign_shared_bands(profile_urls):
+    """여러 프로필이 함께 가입한 밴드를 한 프로필에만 배정합니다.
+
+    profile_urls: 프로필별 밴드 URL 목록의 리스트.
+    밴드마다 그 밴드에 가입한 프로필 중 지금까지 배정이 가장 적은 프로필에 줍니다.
+    (가입 밴드가 적은 프로필이 일감을 덜 잃도록, 혼자만 가입한 밴드부터 먼저 배정)
+    """
+    owners = {}
+    for idx, urls in enumerate(profile_urls):
+        for url in urls:
+            owners.setdefault(url, []).append(idx)
+
+    assigned = [[] for _ in profile_urls]
+    for url, idxs in sorted(owners.items(), key=lambda item: len(item[1])):
+        target = min(idxs, key=lambda i: (len(assigned[i]), i))
+        assigned[target].append(url)
+
+    # 각 프로필 안에서는 원래 순서 유지
+    result = []
+    for urls, mine in zip(profile_urls, assigned):
+        mine = set(mine)
+        result.append([u for u in urls if u in mine])
+    return result
 
 
 class BandMacroApp:
@@ -70,8 +282,8 @@ class BandMacroApp:
         self.var_board_index = ctk.StringVar(value="2")
         self.var_browser = ctk.StringVar(value="chrome")
         self.var_incognito = ctk.BooleanVar(value=False)
-        self.var_backup_list = ctk.StringVar(value="")
         self.var_use_gologin = ctk.BooleanVar(value=False)
+        self.var_gologin_dedupe = ctk.BooleanVar(value=False)
         self.var_gologin_api_key = ctk.StringVar(value="")
         self.gologin_profiles = []       # [{"id": ..., "name": ...}]
         self.profile_vars = {}           # {profile_id: BooleanVar}
@@ -82,10 +294,9 @@ class BandMacroApp:
         self.var_end_minute = ctk.StringVar(value="00")
 
         self._build_gui()
-        self._load_backup_list()
 
     def _build_gui(self):
-        """GUI를 구성합니다."""
+        """GUI를 구성합니다. ①~⑦ 순서대로 조작하면 되도록 배치합니다."""
         # 메인 스크롤 프레임
         main_frame = ctk.CTkScrollableFrame(self.root, fg_color="transparent")
         main_frame.pack(fill="both", expand=True, padx=15, pady=15)
@@ -96,129 +307,184 @@ class BandMacroApp:
         header = ctk.CTkLabel(
             main_frame, text="밴드 매크로 V2.5",
             font=ctk.CTkFont(size=22, weight="bold"))
-        header.pack(pady=(0, 12))
+        header.pack(pady=(0, 2))
+        ctk.CTkLabel(main_frame, text="①부터 ⑦까지 순서대로 진행하세요.  ? 를 누르면 설명이 나옵니다.",
+                     text_color=COLOR_MUTED).pack(pady=(0, 10))
 
         # ═══════════════════════════════════════════
-        #  설정 카드
+        #  ①~⑤ 준비 단계 카드
         # ═══════════════════════════════════════════
-        settings_card = ctk.CTkFrame(main_frame, corner_radius=12)
-        settings_card.pack(fill="x", pady=(0, 8))
+        steps_card = ctk.CTkFrame(main_frame, corner_radius=12)
+        steps_card.pack(fill="x", pady=(0, 8))
 
-        # Row 0: 글쓰기 딜레이 + 체크박스
-        row0 = ctk.CTkFrame(settings_card, fg_color="transparent")
-        row0.pack(fill="x", padx=12, pady=(12, 4))
+        # ① 글작성 폴더
+        step1 = self._step_row(steps_card, 1, first=True)
+        ctk.CTkButton(step1, text="글작성 폴더 열기", width=140, height=28,
+                      command=self.open_content_folder).pack(side="left")
+        self._help_button(step1, "content_folder")
+        self._hint(step1, "글 폴더 만들고 txt·이미지 넣기")
 
-        ctk.CTkLabel(row0, text="글쓰기 딜레이", width=100, anchor="w").pack(side="left")
-        ctk.CTkEntry(row0, textvariable=self.var_delay, width=100).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(row0, text="초", text_color=COLOR_MUTED).pack(side="left", padx=(0, 15))
-        ctk.CTkCheckBox(row0, text="이미지 먼저", variable=self.var_image_first,
-                        checkbox_width=20, checkbox_height=20).pack(side="left", padx=(0, 10))
-        ctk.CTkCheckBox(row0, text="랜덤 글작성", variable=self.var_random_post,
-                        checkbox_width=20, checkbox_height=20).pack(side="left")
-
-        # Row 1: 총 반복 횟수 + 버튼들
-        row1 = ctk.CTkFrame(settings_card, fg_color="transparent")
-        row1.pack(fill="x", padx=12, pady=4)
-
-        ctk.CTkLabel(row1, text="총 반복 횟수", width=100, anchor="w").pack(side="left")
-        ctk.CTkEntry(row1, textvariable=self.var_repeat_count, width=100).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(row1, text="회", text_color=COLOR_MUTED).pack(side="left", padx=(0, 15))
-        ctk.CTkButton(row1, text="글작성 폴더 열기", width=120, height=28,
-                      command=self.open_content_folder).pack(side="left", padx=(0, 5))
-        ctk.CTkButton(row1, text="이미지 가공", width=90, height=28,
+        # ② 이미지 가공
+        step2 = self._step_row(steps_card, 2)
+        ctk.CTkButton(step2, text="이미지 가공", width=140, height=28,
                       fg_color=COLOR_ACCENT, command=self.process_images).pack(side="left")
+        self._help_button(step2, "process_images")
+        self._hint(step2, "(선택) 큰 이미지 용량 줄이기")
 
-        # Row 2: 시스템 딜레이 + 버튼들
-        row2 = ctk.CTkFrame(settings_card, fg_color="transparent")
-        row2.pack(fill="x", padx=12, pady=4)
-
-        ctk.CTkLabel(row2, text="시스템 딜레이", width=100, anchor="w").pack(side="left")
-        ctk.CTkEntry(row2, textvariable=self.var_system_delay, width=100).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(row2, text="초", text_color=COLOR_MUTED).pack(side="left", padx=(0, 15))
-        ctk.CTkButton(row2, text="로그인 하기", width=120, height=28,
-                      fg_color=COLOR_SUCCESS, hover_color="#27ae60",
-                      command=self.do_login).pack(side="left", padx=(0, 5))
-        ctk.CTkButton(row2, text="밴드주소 가져오기", width=130, height=28,
-                      fg_color=COLOR_ACCENT, command=self.fetch_band_urls).pack(side="left")
-
-        # Row 3: 최종 딜레이 + 랜덤문구
-        row3 = ctk.CTkFrame(settings_card, fg_color="transparent")
-        row3.pack(fill="x", padx=12, pady=4)
-
-        ctk.CTkLabel(row3, text="최종 딜레이", width=100, anchor="w").pack(side="left")
-        ctk.CTkEntry(row3, textvariable=self.var_final_delay, width=100).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(row3, text="분", text_color=COLOR_MUTED).pack(side="left", padx=(0, 15))
-        ctk.CTkCheckBox(row3, text="랜덤문구 추가", variable=self.var_random_phrase,
-                        checkbox_width=20, checkbox_height=20).pack(side="left", padx=(0, 10))
-        ctk.CTkButton(row3, text="랜덤문구 작성", width=110, height=28,
+        # ③ 랜덤문구
+        step3 = self._step_row(steps_card, 3)
+        ctk.CTkButton(step3, text="랜덤문구 작성", width=140, height=28,
                       fg_color=COLOR_ACCENT, command=self.edit_random_phrases).pack(side="left")
+        self._help_button(step3, "edit_random_phrases")
+        ctk.CTkCheckBox(step3, text="랜덤문구 추가", variable=self.var_random_phrase,
+                        checkbox_width=20, checkbox_height=20).pack(side="left", padx=(14, 0))
+        self._help_button(step3, "random_phrase")
 
-        # Row 4: 게시판 선택 + 브라우저
-        row4 = ctk.CTkFrame(settings_card, fg_color="transparent")
-        row4.pack(fill="x", padx=12, pady=(4, 12))
-
-        ctk.CTkLabel(row4, text="게시판 선택", width=100, anchor="w").pack(side="left")
-        ctk.CTkEntry(row4, textvariable=self.var_board_index, width=100).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(row4, text="번", text_color=COLOR_MUTED).pack(side="left", padx=(0, 15))
-        ctk.CTkRadioButton(row4, text="크롬", variable=self.var_browser,
-                           value="chrome", radiobutton_width=18, radiobutton_height=18).pack(side="left", padx=(0, 8))
-        ctk.CTkRadioButton(row4, text="엣지", variable=self.var_browser,
-                           value="edge", radiobutton_width=18, radiobutton_height=18).pack(side="left", padx=(0, 10))
-        ctk.CTkCheckBox(row4, text="시크릿", variable=self.var_incognito,
-                        checkbox_width=20, checkbox_height=20).pack(side="left", padx=(0, 10))
-        ctk.CTkButton(row4, text="영역 캡처", width=90, height=28,
-                      fg_color="#7f8c8d", hover_color="#636e72",
-                      command=self.capture_area).pack(side="left")
-
-        # ═══════════════════════════════════════════
-        #  백업 카드
-        # ═══════════════════════════════════════════
-        backup_card = ctk.CTkFrame(main_frame, corner_radius=12)
-        backup_card.pack(fill="x", pady=(0, 8))
-
-        backup_row = ctk.CTkFrame(backup_card, fg_color="transparent")
-        backup_row.pack(fill="x", padx=12, pady=10)
-
-        ctk.CTkLabel(backup_row, text="백업", width=40, anchor="w",
-                     font=ctk.CTkFont(weight="bold")).pack(side="left")
-        self.combo_backup = ctk.CTkComboBox(
-            backup_row, variable=self.var_backup_list,
-            width=200, state="readonly")
-        self.combo_backup.pack(side="left", padx=(0, 8))
-        ctk.CTkButton(backup_row, text="내보내기", width=80, height=28,
-                      command=self.export_backup).pack(side="left", padx=(0, 5))
-        ctk.CTkButton(backup_row, text="가져오기", width=80, height=28,
-                      fg_color=COLOR_ACCENT, command=self.import_backup).pack(side="left")
-
-        # ═══════════════════════════════════════════
-        #  GoLogin 카드
-        # ═══════════════════════════════════════════
-        gologin_card = ctk.CTkFrame(main_frame, corner_radius=12)
-        gologin_card.pack(fill="x", pady=(0, 8))
+        # GoLogin 멀티 프로필 (선택) — ④ 로그인 전에 설정해야 하므로 ③과 ④ 사이에 둠
+        gologin_card = ctk.CTkFrame(steps_card, corner_radius=10, fg_color=COLOR_CARD)
+        gologin_card.pack(fill="x", padx=(8 + STEP_BADGE_WIDTH + 6, 12), pady=6)
 
         gl_header = ctk.CTkFrame(gologin_card, fg_color="transparent")
         gl_header.pack(fill="x", padx=12, pady=(10, 5))
         ctk.CTkCheckBox(gl_header, text="GoLogin 멀티 프로필 사용",
                         variable=self.var_use_gologin,
                         font=ctk.CTkFont(weight="bold"),
-                        checkbox_width=20, checkbox_height=20).pack(side="left")
+                        checkbox_width=20, checkbox_height=20,
+                        command=self._toggle_gologin_body).pack(side="left")
+        self._help_button(gl_header, "gologin")
+        self._hint(gl_header, "여러 계정을 쓸 때만 · ④ 전에 설정")
 
-        gl_row1 = ctk.CTkFrame(gologin_card, fg_color="transparent")
+        # 체크했을 때만 보이는 영역 (API Key + 프로필 목록)
+        self.gl_body = ctk.CTkFrame(gologin_card, fg_color="transparent")
+
+        gl_row1 = ctk.CTkFrame(self.gl_body, fg_color="transparent")
         gl_row1.pack(fill="x", padx=12, pady=(0, 5))
         ctk.CTkLabel(gl_row1, text="API Key", width=60, anchor="w").pack(side="left")
-        ctk.CTkEntry(gl_row1, textvariable=self.var_gologin_api_key, width=280,
+        ctk.CTkEntry(gl_row1, textvariable=self.var_gologin_api_key, width=230,
                      placeholder_text="GoLogin API Key 입력").pack(side="left", padx=(0, 8))
         ctk.CTkButton(gl_row1, text="프로필 가져오기", width=120, height=28,
                       fg_color=COLOR_ACCENT, command=self.fetch_gologin_profiles).pack(side="left")
+        self._help_button(gl_row1, "gologin_profiles")
 
-        self.gl_profile_frame = ctk.CTkScrollableFrame(gologin_card, height=40, corner_radius=8)
+        gl_row2 = ctk.CTkFrame(self.gl_body, fg_color="transparent")
+        gl_row2.pack(fill="x", padx=12, pady=(0, 5))
+        ctk.CTkCheckBox(gl_row2, text="겹치는 밴드는 중복 게시 발행 안함",
+                        variable=self.var_gologin_dedupe,
+                        checkbox_width=20, checkbox_height=20).pack(side="left")
+        self._help_button(gl_row2, "gologin_dedupe")
+
+        # 프로필 수만큼만 늘어나는 목록 (전체 화면이 스크롤되므로 별도 스크롤 없음)
+        self.gl_profile_frame = ctk.CTkFrame(self.gl_body, corner_radius=8)
         self.gl_profile_frame.pack(fill="x", padx=12, pady=(0, 10))
         ctk.CTkLabel(self.gl_profile_frame, text="프로필을 가져오면 여기에 표시됩니다.",
-                     text_color=COLOR_MUTED).pack()
+                     text_color=COLOR_MUTED).pack(pady=6)
+        self._toggle_gologin_body()
+
+        # ④ 브라우저 선택 + 로그인
+        step4 = self._step_row(steps_card, 4)
+        ctk.CTkRadioButton(step4, text="크롬", variable=self.var_browser, width=60,
+                           value="chrome", radiobutton_width=18, radiobutton_height=18).pack(side="left")
+        ctk.CTkRadioButton(step4, text="엣지", variable=self.var_browser, width=60,
+                           value="edge", radiobutton_width=18, radiobutton_height=18).pack(side="left")
+        ctk.CTkCheckBox(step4, text="시크릿", variable=self.var_incognito, width=70,
+                        checkbox_width=20, checkbox_height=20).pack(side="left")
+        self._help_button(step4, "browser")
+        ctk.CTkButton(step4, text="로그인 하기", width=110, height=28,
+                      fg_color=COLOR_SUCCESS, hover_color="#27ae60",
+                      command=self.do_login).pack(side="left", padx=(14, 0))
+        self._help_button(step4, "login")
+
+        # ⑤ 밴드주소 가져오기
+        step5 = self._step_row(steps_card, 5, last=True)
+        ctk.CTkButton(step5, text="밴드주소 가져오기", width=140, height=28,
+                      fg_color=COLOR_ACCENT, command=self.fetch_band_urls).pack(side="left")
+        self._help_button(step5, "fetch_band_urls")
+        self._hint(step5, "아래 URL 목록에 자동으로 채워짐")
 
         # ═══════════════════════════════════════════
-        #  타이머 카드
+        #  밴드 URL 입력
         # ═══════════════════════════════════════════
+        url_header = ctk.CTkFrame(main_frame, fg_color="transparent")
+        url_header.pack(fill="x", pady=(4, 2))
+        ctk.CTkLabel(url_header, text="밴드 URL 목록",
+                     font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(side="left")
+        self._help_button(url_header, "band_urls")
+
+        self.text_urls = ctk.CTkTextbox(main_frame, height=110, corner_radius=8,
+                                        font=ctk.CTkFont(size=12))
+        self.text_urls.pack(fill="x", pady=(0, 8))
+
+        # ═══════════════════════════════════════════
+        #  ⑥ 세부 설정 카드
+        # ═══════════════════════════════════════════
+        settings_card = ctk.CTkFrame(main_frame, corner_radius=12)
+        settings_card.pack(fill="x", pady=(0, 8))
+
+        step6 = self._step_row(settings_card, 6, first=True)
+        ctk.CTkLabel(step6, text="세부 설정 확인",
+                     font=ctk.CTkFont(weight="bold")).pack(side="left")
+        self._hint(step6, "처음이면 기본값 그대로 두어도 됩니다")
+
+        row_a = self._indented_row(settings_card)
+        self._setting_entry(row_a, "글쓰기 딜레이", self.var_delay, "초", "delay")
+        self._setting_entry(row_a, "총 반복 횟수", self.var_repeat_count, "회", "repeat_count")
+
+        row_b = self._indented_row(settings_card)
+        self._setting_entry(row_b, "시스템 딜레이", self.var_system_delay, "초", "system_delay")
+        self._setting_entry(row_b, "최종 딜레이", self.var_final_delay, "분", "final_delay")
+
+        row_c = self._indented_row(settings_card)
+        self._setting_entry(row_c, "게시판 선택", self.var_board_index, "번", "board_index")
+
+        row_d = self._indented_row(settings_card, last=True)
+        ctk.CTkCheckBox(row_d, text="이미지 먼저", variable=self.var_image_first,
+                        checkbox_width=20, checkbox_height=20).pack(side="left")
+        self._help_button(row_d, "image_first")
+        ctk.CTkCheckBox(row_d, text="랜덤 글작성", variable=self.var_random_post,
+                        checkbox_width=20, checkbox_height=20).pack(side="left", padx=(20, 0))
+        self._help_button(row_d, "random_post")
+
+        # ═══════════════════════════════════════════
+        #  ⑦ 시작 / 중지 버튼
+        # ═══════════════════════════════════════════
+        btn_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=(0, 8))
+        self._step_badge(btn_frame, 7).pack(side="left", padx=(8, 6))
+
+        self.btn_start = ctk.CTkButton(
+            btn_frame, text="▶  시작", height=40,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color=COLOR_SUCCESS, hover_color="#27ae60",
+            command=self.start_macro)
+        self.btn_start.pack(side="left", expand=True, fill="x", padx=(0, 5))
+
+        self.btn_stop = ctk.CTkButton(
+            btn_frame, text="■  중지", height=40,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color=COLOR_DANGER, hover_color="#c0392b",
+            state="disabled", command=self.stop_macro)
+        self.btn_stop.pack(side="left", expand=True, fill="x")
+        self._help_button(btn_frame, "start_stop")
+
+        # ═══════════════════════════════════════════
+        #  로그 영역
+        # ═══════════════════════════════════════════
+        log_label = ctk.CTkLabel(main_frame, text="실행 로그",
+                                 font=ctk.CTkFont(size=13, weight="bold"), anchor="w")
+        log_label.pack(fill="x", pady=(4, 2))
+
+        self.text_log = ctk.CTkTextbox(main_frame, height=120, corner_radius=8,
+                                       font=ctk.CTkFont(size=11),
+                                       state="disabled")
+        self.text_log.pack(fill="x", pady=(0, 12))
+
+        # ═══════════════════════════════════════════
+        #  추가 기능 (선택)
+        # ═══════════════════════════════════════════
+        ctk.CTkLabel(main_frame, text="추가 기능 (선택)",
+                     font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(fill="x", pady=(4, 2))
+
+        # 작동시간
         timer_card = ctk.CTkFrame(main_frame, corner_radius=12)
         timer_card.pack(fill="x", pady=(0, 8))
 
@@ -227,6 +493,7 @@ class BandMacroApp:
         ctk.CTkCheckBox(timer_header, text="작동시간 설정", variable=self.var_timer_enabled,
                         font=ctk.CTkFont(weight="bold"),
                         checkbox_width=20, checkbox_height=20).pack(side="left")
+        self._help_button(timer_header, "timer")
 
         timer_row = ctk.CTkFrame(timer_card, fg_color="transparent")
         timer_row.pack(fill="x", padx=12, pady=(0, 10))
@@ -251,48 +518,67 @@ class BandMacroApp:
                         width=65, state="readonly").pack(side="left")
         ctk.CTkLabel(timer_row, text="분").pack(side="left", padx=3)
 
-        # ═══════════════════════════════════════════
-        #  밴드 URL 입력
-        # ═══════════════════════════════════════════
-        url_label = ctk.CTkLabel(main_frame, text="밴드 URL 목록",
-                                 font=ctk.CTkFont(size=13, weight="bold"), anchor="w")
-        url_label.pack(fill="x", pady=(4, 2))
+        # 영역 캡처
+        capture_card = ctk.CTkFrame(main_frame, corner_radius=12)
+        capture_card.pack(fill="x", pady=(0, 8))
 
-        self.text_urls = ctk.CTkTextbox(main_frame, height=130, corner_radius=8,
-                                        font=ctk.CTkFont(size=12))
-        self.text_urls.pack(fill="x", pady=(0, 8))
+        capture_row = ctk.CTkFrame(capture_card, fg_color="transparent")
+        capture_row.pack(fill="x", padx=12, pady=10)
+        ctk.CTkButton(capture_row, text="영역 캡처", width=90, height=28,
+                      fg_color="#7f8c8d", hover_color="#636e72",
+                      command=self.capture_area).pack(side="left")
+        self._help_button(capture_row, "capture_area")
 
-        # ═══════════════════════════════════════════
-        #  시작 / 중지 버튼
-        # ═══════════════════════════════════════════
-        btn_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        btn_frame.pack(fill="x", pady=(0, 8))
+    # ──────────────────────────────────────────────
+    #  GUI 헬퍼 (순서 번호 / 도움말)
+    # ──────────────────────────────────────────────
+    def _step_badge(self, parent, number):
+        """좌측 순서 번호(①②③...) 라벨을 만듭니다."""
+        return ctk.CTkLabel(parent, text=STEP_NUMBERS[number - 1], width=STEP_BADGE_WIDTH,
+                            font=ctk.CTkFont(size=22, weight="bold"), text_color=COLOR_STEP)
 
-        self.btn_start = ctk.CTkButton(
-            btn_frame, text="▶  시작", height=40,
-            font=ctk.CTkFont(size=15, weight="bold"),
-            fg_color=COLOR_SUCCESS, hover_color="#27ae60",
-            command=self.start_macro)
-        self.btn_start.pack(side="left", expand=True, fill="x", padx=(0, 5))
+    def _step_row(self, card, number, first=False, last=False):
+        """좌측에 순서 번호가 붙은 행을 만들고, 내용을 담을 프레임을 반환합니다."""
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=(8, 12), pady=(10 if first else 3, 10 if last else 3))
+        self._step_badge(row, number).pack(side="left", padx=(0, 6))
+        return row
 
-        self.btn_stop = ctk.CTkButton(
-            btn_frame, text="■  중지", height=40,
-            font=ctk.CTkFont(size=15, weight="bold"),
-            fg_color=COLOR_DANGER, hover_color="#c0392b",
-            state="disabled", command=self.stop_macro)
-        self.btn_stop.pack(side="left", expand=True, fill="x")
+    def _indented_row(self, card, last=False):
+        """번호 열만큼 들여쓴 행을 만듭니다 (⑥ 설정 항목용)."""
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=(8 + STEP_BADGE_WIDTH + 6, 12), pady=(3, 10 if last else 3))
+        return row
 
-        # ═══════════════════════════════════════════
-        #  로그 영역
-        # ═══════════════════════════════════════════
-        log_label = ctk.CTkLabel(main_frame, text="실행 로그",
-                                 font=ctk.CTkFont(size=13, weight="bold"), anchor="w")
-        log_label.pack(fill="x", pady=(4, 2))
+    def _setting_entry(self, parent, label, variable, unit, help_key):
+        """라벨 + 입력칸 + 단위 + ? 버튼 묶음을 만듭니다."""
+        ctk.CTkLabel(parent, text=label, width=90, anchor="w").pack(side="left")
+        ctk.CTkEntry(parent, textvariable=variable, width=75).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(parent, text=unit, text_color=COLOR_MUTED, width=16).pack(side="left")
+        self._help_button(parent, help_key)
+        ctk.CTkFrame(parent, fg_color="transparent", width=18, height=1).pack(side="left")
 
-        self.text_log = ctk.CTkTextbox(main_frame, height=120, corner_radius=8,
-                                       font=ctk.CTkFont(size=11),
-                                       state="disabled")
-        self.text_log.pack(fill="both", expand=True)
+    def _toggle_gologin_body(self):
+        """GoLogin 사용 체크 여부에 따라 API Key/프로필 영역을 보이거나 숨깁니다."""
+        if self.var_use_gologin.get():
+            self.gl_body.pack(fill="x")
+        else:
+            self.gl_body.pack_forget()
+
+    def _hint(self, parent, text):
+        """버튼 옆 짧은 회색 안내 문구를 붙입니다."""
+        ctk.CTkLabel(parent, text=text, text_color=COLOR_MUTED,
+                     font=ctk.CTkFont(size=11)).pack(side="left", padx=(8, 0))
+
+    def _help_button(self, parent, help_key):
+        """클릭하면 설명 창이 뜨는 ? 버튼을 붙입니다."""
+        title, body = HELP_TEXTS[help_key]
+        btn = ctk.CTkButton(parent, text="?", width=22, height=22, corner_radius=11,
+                            font=ctk.CTkFont(size=12, weight="bold"),
+                            fg_color=COLOR_HELP, hover_color=COLOR_HELP_HOVER,
+                            command=lambda: messagebox.showinfo(title, body, parent=self.root))
+        btn.pack(side="left", padx=(4, 0))
+        return btn
 
     # ──────────────────────────────────────────────
     #  로그
@@ -361,11 +647,24 @@ class BandMacroApp:
             messagebox.showwarning("경고", "프로필을 선택해주세요.")
             return
 
+        # 실행 중에 다시 누르면 같은 프로필이 두 번 열리므로 막음
+        if getattr(self, "gologin_launching", False):
+            self.log("GoLogin 브라우저를 여는 중입니다. 끝날 때까지 기다려주세요.")
+            return
+        self.gologin_launching = True
+
         # GoLogin 인스턴스 저장 (나중에 stop용)
         self.gologin_instances = []
         self.gologin_automations = []
+        self.gologin_names = []          # gologin_automations와 같은 순서의 프로필 이름
 
         def _launch():
+            try:
+                _launch_all()
+            finally:
+                self.gologin_launching = False
+
+        def _launch_all():
             for p_idx, profile_id in enumerate(selected):
                 profile_name = next(
                     (p["name"] for p in self.gologin_profiles if p["id"] == profile_id),
@@ -373,6 +672,21 @@ class BandMacroApp:
 
                 try:
                     gl = GoLogin({"token": api_key, "profile_id": profile_id})
+                    problem = gologin_profile_problem(gl)
+                    if problem and "subscription" in problem.lower():
+                        # 계정 단위 문제라 나머지 프로필도 같은 이유로 실패함 → 바로 중단
+                        self.log(f"[{profile_name}] 시작 불가: {problem}")
+                        self.log("GoLogin 구독이 만료되어 브라우저를 열 수 없습니다. 실행을 중단합니다.")
+                        self.root.after(0, lambda: messagebox.showwarning(
+                            "GoLogin 구독 만료",
+                            "GoLogin 워크스페이스 구독이 종료되어 브라우저를 열 수 없습니다.\n\n"
+                            "GoLogin 웹사이트에서 요금제를 갱신한 뒤 다시 시도해주세요.\n"
+                            "(프로필 목록 가져오기는 되지만, 브라우저 실행은 유료 구독이 필요합니다)",
+                            parent=self.root))
+                        break
+                    if problem:
+                        self.log(f"[{profile_name}] 시작 불가: {problem}")
+                        continue
                     debugger_address = gl.start()
                     self.log(f"[{profile_name}] 브라우저 시작: {debugger_address}")
 
@@ -399,6 +713,7 @@ class BandMacroApp:
                                 pass
                         self.gologin_instances.append(gl)
                         self.gologin_automations.append(automation)
+                        self.gologin_names.append(profile_name)
                         self.log(f"[{profile_name}] 밴드 로그인 페이지 열림 - 로그인해주세요.")
                     else:
                         self.log(f"[{profile_name}] 연결 실패 - 브라우저는 유지됩니다.")
@@ -414,6 +729,14 @@ class BandMacroApp:
 
     def fetch_band_urls(self):
         """가입된 밴드 URL을 가져옵니다."""
+        if self.var_use_gologin.get():
+            messagebox.showinfo(
+                "GoLogin 모드",
+                "GoLogin 모드에서는 시작을 누르면 프로필마다\n"
+                "자기 계정의 가입 밴드를 자동으로 가져옵니다.\n\n"
+                "밴드 URL 목록은 사용하지 않으니 비워두셔도 됩니다.",
+                parent=self.root)
+            return
         if not self.automation or not self.automation.driver:
             self.log("먼저 로그인을 해주세요.")
             return
@@ -503,94 +826,6 @@ class BandMacroApp:
             self.root.deiconify()
 
     # ──────────────────────────────────────────────
-    #  백업
-    # ──────────────────────────────────────────────
-    def _get_settings(self):
-        """현재 설정값을 딕셔너리로 반환합니다."""
-        return {
-            "delay": self.var_delay.get(),
-            "image_first": self.var_image_first.get(),
-            "random_post": self.var_random_post.get(),
-            "repeat_count": self.var_repeat_count.get(),
-            "system_delay": self.var_system_delay.get(),
-            "final_delay": self.var_final_delay.get(),
-            "random_phrase": self.var_random_phrase.get(),
-            "board_index": self.var_board_index.get(),
-            "browser": self.var_browser.get(),
-            "incognito": self.var_incognito.get(),
-            "band_urls": self.text_urls.get("1.0", "end").strip(),
-            "timer_enabled": self.var_timer_enabled.get(),
-            "start_hour": self.var_start_hour.get(),
-            "start_minute": self.var_start_minute.get(),
-            "end_hour": self.var_end_hour.get(),
-            "end_minute": self.var_end_minute.get(),
-        }
-
-    def _apply_settings(self, settings):
-        """딕셔너리로부터 설정값을 적용합니다."""
-        self.var_delay.set(settings.get("delay", "150~250"))
-        self.var_image_first.set(settings.get("image_first", True))
-        self.var_random_post.set(settings.get("random_post", False))
-        self.var_repeat_count.set(settings.get("repeat_count", "10"))
-        self.var_system_delay.set(settings.get("system_delay", "1.5"))
-        self.var_final_delay.set(settings.get("final_delay", "10"))
-        self.var_random_phrase.set(settings.get("random_phrase", True))
-        self.var_board_index.set(settings.get("board_index", "2"))
-        self.var_browser.set(settings.get("browser", "chrome"))
-        self.var_incognito.set(settings.get("incognito", False))
-        self.text_urls.delete("1.0", "end")
-        self.text_urls.insert("1.0", settings.get("band_urls", ""))
-        self.var_timer_enabled.set(settings.get("timer_enabled", False))
-        self.var_start_hour.set(settings.get("start_hour", "09"))
-        self.var_start_minute.set(settings.get("start_minute", "00"))
-        self.var_end_hour.set(settings.get("end_hour", "18"))
-        self.var_end_minute.set(settings.get("end_minute", "00"))
-
-    def export_backup(self):
-        """설정을 백업 파일로 내보냅니다."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"Data_{timestamp}.json"
-        filepath = os.path.join(SYSTEM_DIR, filename)
-
-        settings = self._get_settings()
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
-
-        self.log(f"백업 내보내기 완료: {filename}")
-        self._load_backup_list()
-
-    def import_backup(self):
-        """선택된 백업 파일에서 설정을 가져옵니다."""
-        selected = self.var_backup_list.get()
-        if not selected:
-            self.log("백업 파일을 선택해주세요.")
-            return
-
-        filepath = os.path.join(SYSTEM_DIR, selected)
-        if not os.path.exists(filepath):
-            self.log("백업 파일이 존재하지 않습니다.")
-            return
-
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                settings = json.load(f)
-            self._apply_settings(settings)
-            self.log(f"백업 가져오기 완료: {selected}")
-        except Exception as e:
-            self.log(f"백업 가져오기 실패: {e}")
-
-    def _load_backup_list(self):
-        """백업 파일 목록을 로드합니다."""
-        files = []
-        if os.path.exists(SYSTEM_DIR):
-            for f in sorted(os.listdir(SYSTEM_DIR)):
-                if f.startswith("Data_") and f.endswith(".json"):
-                    files.append(f)
-        self.combo_backup.configure(values=files)
-        if files:
-            self.var_backup_list.set(files[-1])
-
-    # ──────────────────────────────────────────────
     #  작동시간 타이머
     # ──────────────────────────────────────────────
     def _is_within_operating_hours(self):
@@ -638,7 +873,7 @@ class BandMacroApp:
             return folders
         for name in sorted(os.listdir(CONTENT_DIR)):
             path = os.path.join(CONTENT_DIR, name)
-            if os.path.isdir(path):
+            if os.path.isdir(path) and not name.startswith(SKIP_FOLDER_PREFIX):
                 folders.append(path)
         return folders
 
@@ -678,26 +913,31 @@ class BandMacroApp:
     # ──────────────────────────────────────────────
     def start_macro(self):
         """매크로를 시작합니다."""
-        urls_text = self.text_urls.get("1.0", "end").strip()
-        if not urls_text:
-            messagebox.showwarning("경고", "밴드 URL을 입력해주세요.")
-            return
+        use_gologin = self.var_use_gologin.get()
 
+        # GoLogin 모드는 프로필마다 가입 밴드를 직접 가져오므로 URL 목록을 쓰지 않음
         band_urls = []
-        for line in urls_text.split("\n"):
-            line = line.strip()
-            if line.startswith("https://band.us/band/"):
-                band_urls.append(line)
-        if not band_urls:
-            messagebox.showwarning("경고", "유효한 밴드 URL이 없습니다.\nhttps://band.us/band/... 형식으로 입력해주세요.")
-            return
+        if not use_gologin:
+            urls_text = self.text_urls.get("1.0", "end").strip()
+            if not urls_text:
+                messagebox.showwarning("경고", "밴드 URL을 입력해주세요.")
+                return
+
+            for line in urls_text.split("\n"):
+                line = line.strip()
+                if line.startswith("https://band.us/band/"):
+                    band_urls.append(line)
+            if not band_urls:
+                messagebox.showwarning("경고", "유효한 밴드 URL이 없습니다.\nhttps://band.us/band/... 형식으로 입력해주세요.")
+                return
 
         content_folders = self._load_content_folders()
         if not content_folders:
-            messagebox.showwarning("경고", "글작성 폴더(content/)에 컨텐츠 폴더를 만들어주세요.")
+            messagebox.showwarning(
+                "경고", "글작성 폴더(content/)에 올릴 글 폴더를 만들어주세요.\n\n"
+                        "_sample 폴더를 복사해서 이름을 바꾸면 됩니다.\n"
+                        "(이름이 _ 로 시작하는 폴더는 올라가지 않습니다)")
             return
-
-        use_gologin = self.var_use_gologin.get()
 
         if not use_gologin:
             if not self.automation or not self.automation.driver:
@@ -775,8 +1015,13 @@ class BandMacroApp:
     def _run_posting_loop(self, automation, band_urls, content_folders,
                           repeat_count, delay_min, delay_max,
                           system_delay, final_delay_min, board_index,
-                          image_first, random_post, use_random_phrase):
-        """포스팅 반복 루프 (일반/GoLogin 공용)."""
+                          image_first, random_post, use_random_phrase,
+                          content_offset=0):
+        """포스팅 반복 루프 (일반/GoLogin 공용).
+
+        content_offset: 시작 글 폴더 위치. GoLogin 프로필마다 다르게 주어
+        같은 회차에 프로필끼리 같은 글을 쓰지 않도록 합니다.
+        """
         for cycle in range(1, repeat_count + 1):
             if self.stop_event.is_set():
                 break
@@ -784,7 +1029,7 @@ class BandMacroApp:
             if random_post:
                 folder = random.choice(content_folders)
             else:
-                folder = content_folders[(cycle - 1) % len(content_folders)]
+                folder = content_folders[(cycle - 1 + content_offset) % len(content_folders)]
 
             text_content, image_paths = self._load_content(folder)
             folder_name = os.path.basename(folder)
@@ -862,52 +1107,84 @@ class BandMacroApp:
                            repeat_count, delay_min, delay_max,
                            system_delay, final_delay_min, board_index,
                            image_first, random_post, use_random_phrase):
-        """GoLogin 멀티 프로필 매크로 - 이미 열린 브라우저들을 동시 병렬 실행."""
+        """GoLogin 멀티 프로필 매크로.
+
+        1단계: 프로필마다 자기 계정의 가입 밴드를 동시에 가져옴 (URL 목록은 사용 안 함)
+        2단계: (옵션) 여러 프로필이 함께 가입한 밴드는 한 프로필에만 배정
+        3단계: 프로필마다 글 폴더 시작 위치를 다르게 해서 동시에 글쓰기
+        """
         automations = self.gologin_automations
+        names = getattr(self, "gologin_names", [])
+        prefixes = [f"[{names[i] if i < len(names) else f'브라우저{i + 1}'}]"
+                    for i in range(len(automations))]
+        dedupe = self.var_gologin_dedupe.get()
 
         self.log("=" * 40)
-        self.log(f"GoLogin 매크로 시작! 브라우저 {len(automations)}개 (동시 실행)")
-        self.log(f"밴드 URL: {len(band_urls)}개")
+        self.log(f"GoLogin 매크로 시작! 프로필 {len(automations)}개 (동시 실행)")
         self.log(f"컨텐츠 폴더: {len(content_folders)}개")
         self.log("=" * 40)
 
-        def _run_single(automation, idx):
-            """개별 브라우저 실행 (별도 스레드)."""
-            prefix = f"[브라우저{idx+1}]"
+        def _with_prefix(automation, idx, work):
+            """automation 로그에 프로필 이름을 붙인 채로 work()를 실행합니다."""
             orig_log = automation.log
-            automation.log = lambda msg: self.log(f"{prefix} {msg}")
-
+            automation.log = lambda msg: self.log(f"{prefixes[idx]} {msg}")
             try:
-                # 밴드 URL 가져오기
-                if not band_urls or band_urls == [""]:
-                    automation.log("밴드 주소 자동 가져오기...")
-                    urls = automation.fetch_band_urls()
-                else:
-                    urls = band_urls
-
-                self._run_posting_loop(
-                    automation, urls, content_folders,
-                    repeat_count, delay_min, delay_max,
-                    system_delay, final_delay_min, board_index,
-                    image_first, random_post, use_random_phrase)
-
-                automation.log("완료!")
+                return work()
             except Exception as e:
                 automation.log(f"오류: {e}")
             finally:
                 automation.log = orig_log
 
-        # 모든 브라우저를 동시에 스레드로 실행
-        threads = []
-        for idx, automation in enumerate(automations):
-            t = threading.Thread(target=_run_single, args=(automation, idx), daemon=True)
-            threads.append(t)
-            t.start()
+        def _run_all(target):
+            threads = [threading.Thread(target=target, args=(a, i), daemon=True)
+                       for i, a in enumerate(automations)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
 
-        for t in threads:
-            t.join()
+        # 1단계: 프로필별 가입 밴드 수집
+        profile_urls = [[] for _ in automations]
 
-        self.log("\n모든 브라우저 매크로 완료!")
+        def _fetch(automation, idx):
+            automation.log("가입한 밴드 주소 가져오는 중...")
+            profile_urls[idx] = _with_prefix(automation, idx, automation.fetch_band_urls) or []
+
+        _run_all(_fetch)
+        if self.stop_event.is_set():
+            return
+
+        # 2단계: 겹치는 밴드 배정
+        if dedupe:
+            assigned = assign_shared_bands(profile_urls)
+            removed = sum(len(a) for a in profile_urls) - sum(len(a) for a in assigned)
+            if removed:
+                self.log(f"여러 프로필이 함께 가입한 밴드 {removed}건을 한 프로필에만 배정했습니다.")
+            profile_urls = assigned
+        for idx, urls in enumerate(profile_urls):
+            self.log(f"{prefixes[idx]} 글 쓸 밴드 {len(urls)}개, 시작 글 폴더 "
+                     f"{os.path.basename(content_folders[idx % len(content_folders)])}")
+
+        # 3단계: 동시에 글쓰기 (프로필마다 시작 글 폴더를 한 칸씩 밀어서)
+        def _post(automation, idx):
+            urls = profile_urls[idx]
+            if not urls:
+                self.log(f"{prefixes[idx]} 글 쓸 밴드가 없어 건너뜁니다.")
+                return
+
+            def work():
+                self._run_posting_loop(
+                    automation, urls, content_folders,
+                    repeat_count, delay_min, delay_max,
+                    system_delay, final_delay_min, board_index,
+                    image_first, random_post, use_random_phrase,
+                    content_offset=idx)
+                automation.log("완료!")
+
+            _with_prefix(automation, idx, work)
+
+        _run_all(_post)
+        self.log("\n모든 프로필 매크로 완료!")
 
     def stop_macro(self):
         """매크로를 중지합니다."""

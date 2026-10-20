@@ -1,6 +1,7 @@
 """네이버 밴드 자동화 모듈 - Selenium 기반 브라우저 제어"""
 
 import os
+import re
 import time
 import random
 import subprocess
@@ -21,6 +22,57 @@ from selenium.common.exceptions import (
 )
 
 BAND_LOGIN_URL = "https://auth.band.us/login_page"
+DORMANT_FOLDER_TEXT = "방문이 뜸한 밴드"
+
+# 화면에서 글자가 정확히 일치하는 가장 안쪽 요소를 찾는 스크립트 (없으면 null)
+FIND_TEXT_ELEMENT_JS = r"""
+const text = arguments[0];
+return Array.from(document.querySelectorAll('body *')).find(el =>
+    el.children.length === 0 && (el.textContent || '').trim() === text) || null;
+"""
+
+# 내 밴드 페이지에서 가입한 밴드 링크만 반환하는 스크립트.
+# 첫 번째 AD(광고/추천 게시글) 카드 또는 "이런 밴드는 어때요" 영역을 경계로,
+# 그보다 앞에 있는 밴드 링크만 문서 순서대로 돌려줍니다. 경계를 못 찾으면 null.
+JOINED_BAND_LINKS_JS = r"""
+const isMarker = t => t === 'AD' || /^AD\s*·/.test(t) ||
+    t.includes('추천 게시글') || t.includes('이런 밴드는 어때요');
+const bandId = a => ((a.getAttribute('href') || '').match(/\/band\/(\d+)/) || [])[1];
+const anchors = Array.from(document.querySelectorAll('a[href*="/band/"]')).filter(bandId);
+
+// 1) 경계: 광고 카드(class에 adBand 포함 — 광고 문구가 바뀌어도 유지됨) +
+//    경계 문구가 들어있는 가장 안쪽 요소들
+const isAd = el => !!el.closest('[class*="adBand"]');
+const markers = Array.from(document.querySelectorAll('[class*="adBand"]')).concat(
+    Array.from(document.querySelectorAll('body *')).filter(el =>
+        el.children.length === 0 && isMarker((el.textContent || '').trim())));
+if (markers.length === 0) return null;
+
+// 2) 문구 요소를 카드 단위까지 키움: 밴드가 2개 이상 들어있는 영역 직전 조상까지 올라감
+const idsIn = el => new Set(anchors.filter(a => el.contains(a) || a.contains(el)).map(bandId));
+const toCard = el => {
+    let node = el;
+    while (node.parentElement && node.parentElement !== document.body &&
+           idsIn(node.parentElement).size <= 1) {
+        node = node.parentElement;
+    }
+    return node;
+};
+
+// 3) 문서 순서상 가장 앞선 경계
+let cutoff = null;
+for (const m of markers) {
+    const card = toCard(m);
+    if (!cutoff || (card.compareDocumentPosition(cutoff) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+        cutoff = card;
+    }
+}
+
+return anchors
+    .filter(a => !isAd(a) && !cutoff.contains(a) && !a.contains(cutoff) &&
+                 (a.compareDocumentPosition(cutoff) & Node.DOCUMENT_POSITION_FOLLOWING))
+    .map(a => a.href);
+"""
 
 
 class BandAutomation:
@@ -145,12 +197,18 @@ class BandAutomation:
                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                 time.sleep(self.system_delay)
 
-            # URL 추출
-            links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/band/']")
+            # URL 추출 (가입한 밴드 목록만: AD 카드 / 추천 밴드 영역부터는 제외)
+            hrefs = self.driver.execute_script(JOINED_BAND_LINKS_JS)
+            if hrefs is None:
+                self.log("AD/추천 영역을 찾지 못해 페이지 전체 링크를 가져옵니다.")
+                hrefs = [link.get_attribute("href") for link in
+                         self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/band/']")]
+            # '방문이 뜸한 밴드' 폴더 안의 가입 밴드도 추가
+            hrefs = list(hrefs) + self._fetch_dormant_folder_hrefs()
+
             seen = set()
             band_urls = []
-            for link in links:
-                href = link.get_attribute("href")
+            for href in hrefs:
                 if href and "/band/" in href:
                     parts = href.split("/band/")
                     if len(parts) > 1:
@@ -163,6 +221,54 @@ class BandAutomation:
             return band_urls
         except Exception as e:
             self.log(f"밴드 주소 가져오기 실패: {e}")
+            return []
+
+    def _fetch_dormant_folder_hrefs(self):
+        """'방문이 뜸한 밴드' 폴더를 열어 그 안의 밴드 링크를 가져옵니다."""
+        try:
+            folder = self.driver.execute_script(FIND_TEXT_ELEMENT_JS, DORMANT_FOLDER_TEXT)
+            if not folder:
+                return []
+
+            # 클릭 전 링크에 표시 → 클릭 후 표시 없는 링크 = 폴더에서 새로 나온 링크
+            start_url = self.driver.current_url
+            self.driver.execute_script(
+                "document.querySelectorAll('a').forEach(a => a.dataset.bmSeen = '1');")
+            self._safe_click(folder)
+            time.sleep(self.system_delay * 2)
+
+            if self.driver.current_url != start_url:
+                # 별도 페이지로 이동한 경우: 그 페이지의 밴드 링크
+                hrefs = self.driver.execute_script(JOINED_BAND_LINKS_JS)
+                if hrefs is None:
+                    hrefs = [a.get_attribute("href") for a in
+                             self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/band/']")]
+                self.driver.back()
+                time.sleep(self.system_delay)
+            else:
+                # 팝업으로 열린 경우: 목록 끝까지 스크롤하며 새 링크 수집
+                last_count = -1
+                for _ in range(20):
+                    new_links = self.driver.find_elements(
+                        By.CSS_SELECTOR, "a[href*='/band/']:not([data-bm-seen])")
+                    if len(new_links) == last_count:
+                        break
+                    last_count = len(new_links)
+                    if new_links:
+                        self.driver.execute_script(
+                            "arguments[0].scrollIntoView({block: 'end'});", new_links[-1])
+                    time.sleep(self.system_delay)
+                hrefs = [a.get_attribute("href") for a in new_links]
+                ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+
+            hrefs = [h for h in hrefs if h and re.search(r"/band/\d+", h)]
+            if hrefs:
+                self.log(f"'{DORMANT_FOLDER_TEXT}' 폴더에서 링크 {len(hrefs)}개를 찾았습니다.")
+            else:
+                self.log(f"'{DORMANT_FOLDER_TEXT}' 폴더를 열었지만 밴드 링크를 찾지 못했습니다.")
+            return hrefs
+        except Exception as e:
+            self.log(f"'{DORMANT_FOLDER_TEXT}' 폴더 읽기 실패: {e}")
             return []
 
     # ──────────────────────────────────────────────
