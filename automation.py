@@ -2,6 +2,8 @@
 
 import os
 import re
+import json
+import urllib.request
 import time
 import random
 import subprocess
@@ -22,6 +24,26 @@ from selenium.common.exceptions import (
 )
 
 BAND_LOGIN_URL = "https://auth.band.us/login_page"
+BROWSER_NAMES = {"chrome": "크롬", "edge": "엣지"}
+
+
+def explain_driver_error(error):
+    """브라우저/드라이버 오류를 사용자가 할 일이 보이는 한국어 안내로 바꿉니다."""
+    raw = (getattr(error, "msg", None) or str(error) or "").strip()
+    first_line = raw.splitlines()[0].split("; For documentation")[0] if raw else "알 수 없는 오류"
+    text = raw.lower()
+    if "only supports" in text or ("version" in text and "session not created" in text):
+        hint = "브라우저와 드라이버 버전이 맞지 않습니다. 브라우저를 최신으로 업데이트한 뒤 다시 시도해주세요."
+    elif ("cannot find" in text and "binary" in text) or "no such file" in text:
+        hint = "브라우저가 설치되어 있지 않습니다. 크롬이나 엣지를 설치하거나 다른 브라우저를 선택해주세요."
+    elif "unable to obtain" in text or "selenium manager" in text or "failed to download" in text:
+        hint = ("브라우저 드라이버를 내려받지 못했습니다. 처음 실행할 때는 인터넷 연결이 필요합니다. "
+                "회사망이라면 방화벽/보안 프로그램을 확인해주세요.")
+    elif "not reachable" in text or "cannot connect" in text:
+        hint = "열린 브라우저에 연결하지 못했습니다. 브라우저 창을 닫고 ④ 로그인 하기를 다시 눌러주세요."
+    else:
+        hint = "브라우저를 모두 닫고 다시 시도해주세요."
+    return f"{hint} [{first_line[:150]}]"
 DORMANT_FOLDER_TEXT = "방문이 뜸한 밴드"
 
 # 화면에서 글자가 정확히 일치하는 가장 안쪽 요소를 찾는 스크립트 (없으면 null)
@@ -109,60 +131,93 @@ class BandAutomation:
     # ──────────────────────────────────────────────
     #  브라우저
     # ──────────────────────────────────────────────
-    def start_browser(self):
-        """브라우저를 시작합니다."""
-        try:
-            if self.browser_type == "chrome":
-                options = ChromeOptions()
-                options.add_argument("--start-maximized")
-                options.add_argument("--disable-blink-features=AutomationControlled")
-                options.add_experimental_option("excludeSwitches", ["enable-automation"])
-                options.add_experimental_option("useAutomationExtension", False)
-                if self.incognito:
-                    options.add_argument("--incognito")
-                self.driver = webdriver.Chrome(options=options)
-            else:
-                options = EdgeOptions()
-                options.add_argument("--start-maximized")
-                options.add_argument("--disable-blink-features=AutomationControlled")
-                options.add_experimental_option("excludeSwitches", ["enable-automation"])
-                options.add_experimental_option("useAutomationExtension", False)
-                if self.incognito:
-                    options.add_argument("--inprivate")
-                self.driver = webdriver.Edge(options=options)
+    def _new_driver(self, browser_type):
+        """크롬/엣지 드라이버를 만듭니다. 드라이버는 Selenium Manager가 브라우저 버전에 맞춰 자동으로 받습니다."""
+        if browser_type == "chrome":
+            options = ChromeOptions()
+            private_flag, driver_cls = "--incognito", webdriver.Chrome
+        else:
+            options = EdgeOptions()
+            private_flag, driver_cls = "--inprivate", webdriver.Edge
+        options.add_argument("--start-maximized")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+        if self.incognito:
+            options.add_argument(private_flag)
+        return driver_cls(options=options)
 
+    def start_browser(self):
+        """브라우저를 시작합니다. 선택한 브라우저가 안 되면 다른 브라우저(크롬↔엣지)로 자동 전환합니다."""
+        first = self.browser_type if self.browser_type in ("chrome", "edge") else "chrome"
+        second = "edge" if first == "chrome" else "chrome"
+        errors = []
+        for browser_type in (first, second):
+            try:
+                self.driver = self._new_driver(browser_type)
+            except Exception as e:
+                errors.append((browser_type, e))
+                self.log(f"{BROWSER_NAMES[browser_type]} 시작 실패: {explain_driver_error(e)}")
+                continue
+
+            if browser_type != first:
+                self.log(f"{BROWSER_NAMES[first]} 대신 {BROWSER_NAMES[browser_type]}로 실행했습니다.")
+            self.browser_type = browser_type
             self.driver.execute_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
             self.log("브라우저가 시작되었습니다.")
             return True
-        except Exception as e:
-            self.log(f"브라우저 시작 실패: {e}")
-            return False
+
+        self.log("크롬과 엣지 모두 실행하지 못했습니다. 위 안내를 확인해주세요.")
+        return False
 
     def connect_gologin(self, debugger_address, browser_path=None):
         """GoLogin 프로필의 debugger_address로 Selenium을 연결합니다.
 
-        browser_path: GoLogin 브라우저(Orbita) 실행 파일. 주면 PC에 설치된 크롬 대신
-        이 브라우저 버전에 맞는 chromedriver를 받아 씁니다. (버전이 다르면 연결 실패)
+        chromedriver는 브라우저 버전과 맞아야 붙을 수 있는데, GoLogin 브라우저(Orbita)는
+        PC에 설치된 크롬과 버전이 다르고 프로필마다도 다를 수 있습니다. 그래서
+        ① Orbita 실행 파일 기준 → ② 브라우저에 직접 물어본 버전 기준 → ③ 기본값 순으로 시도합니다.
         """
-        try:
+        attempts = []
+        if browser_path and os.path.exists(browser_path):
+            attempts.append(("실행 파일 기준", {"binary_location": browser_path}))
+        version = self._debugger_browser_version(debugger_address)
+        if version:
+            attempts.append((f"버전 {version} 기준", {"browser_version": version}))
+        attempts.append(("기본값", {}))
+
+        last_error = None
+        for label, settings in attempts:
             options = ChromeOptions()
             options.add_experimental_option("debuggerAddress", debugger_address)
-            if browser_path and os.path.exists(browser_path):
-                options.binary_location = browser_path
-            self.driver = webdriver.Chrome(options=options)
+            for key, value in settings.items():
+                setattr(options, key, value)
+            try:
+                self.driver = webdriver.Chrome(options=options)
+            except Exception as e:
+                last_error = e
+                continue
             try:
                 self.driver.maximize_window()
             except Exception:
                 pass  # 창 크기 조절 실패는 연결과 무관
-            self.log(f"GoLogin 프로필 연결 완료: {debugger_address}")
+            self.log(f"GoLogin 프로필 연결 완료 ({label}): {debugger_address}")
             return True
-        except Exception as e:
-            # Selenium 오류 문자열 뒤에 붙는 스택트레이스는 빼고 첫 줄만 기록
-            message = (getattr(e, "msg", None) or str(e)).strip().splitlines()[0]
-            self.log(f"GoLogin 연결 실패: {message}")
-            return False
+
+        self.log(f"GoLogin 연결 실패: {explain_driver_error(last_error)}")
+        return False
+
+    @staticmethod
+    def _debugger_browser_version(debugger_address):
+        """디버그 포트로 브라우저에 버전을 물어 주 버전(예: '144')을 반환합니다. 실패 시 None."""
+        try:
+            with urllib.request.urlopen(f"http://{debugger_address}/json/version", timeout=5) as resp:
+                browser = json.loads(resp.read().decode("utf-8")).get("Browser", "")
+            match = re.search(r"/(\d+)\.", browser)
+            return match.group(1) if match else None
+        except Exception:
+            return None
 
     def disconnect(self):
         """Selenium 연결만 해제합니다 (GoLogin 프로필은 유지)."""

@@ -116,7 +116,9 @@ HELP_TEXTS = {
         "PC에 설치된 브라우저를 선택하세요.\n\n"
         "시크릿: 기록이 남지 않는 창으로 엽니다.\n"
         "체크하면 프로그램을 켤 때마다 다시 로그인해야 합니다.\n\n"
-        "※ 로그인 하기를 누르기 전에 선택해야 적용됩니다."),
+        "※ 로그인 하기를 누르기 전에 선택해야 적용됩니다.\n"
+        "※ 선택한 브라우저가 없거나 실행되지 않으면 다른 브라우저(크롬↔엣지)로 자동 전환합니다.\n"
+        "※ 처음 실행할 때 브라우저 버전에 맞는 드라이버를 자동으로 내려받습니다. (인터넷 필요)"),
     "login": ("④ 로그인 하기",
         "선택한 브라우저로 밴드 로그인 페이지를 엽니다.\n"
         "열린 브라우저에서 직접 로그인해주세요.\n\n"
@@ -244,7 +246,22 @@ def gologin_profile_problem(gl):
     return f"브라우저 버전을 알 수 없는 userAgent입니다: {user_agent[:80]}"
 
 
-PROFILE_SECTION_RE = re.compile(r"^#\s*\[(.+)\]\s*$")
+def window_geometry(root, width, height):
+    """창 크기를 화면 안에 들어오게 줄이고, 화면 위쪽 가운데에 둡니다.
+
+    customtkinter는 윈도우 화면 배율(125%, 150% 등)만큼 창을 키우므로
+    작은 노트북 화면에서는 820 높이가 화면 밖으로 넘칠 수 있습니다.
+    """
+    scale = ctk.ScalingTracker.get_window_scaling(root) or 1
+    screen_w = root.winfo_screenwidth() / scale
+    screen_h = root.winfo_screenheight() / scale
+    width = int(min(width, screen_w - 40))
+    height = int(min(height, screen_h - 100))  # 작업 표시줄·제목 표시줄 여유
+    x = int(max(0, (screen_w - width) / 2))
+    return f"{width}x{height}+{x}+20"
+
+
+PROFILE_SECTION_RE =re.compile(r"^#\s*\[(.+)\]\s*$")
 
 
 def format_profile_sections(names, profile_urls):
@@ -305,7 +322,8 @@ class BandMacroApp:
     def __init__(self):
         self.root = ctk.CTk()
         self.root.title("밴드 매크로 V2.5")
-        self.root.geometry("620x820")
+        self.root.geometry(window_geometry(self.root, 620, 820))
+        self.root.minsize(560, 420)
         self.root.resizable(True, True)
 
         # 상태 변수
@@ -673,7 +691,13 @@ class BandMacroApp:
             system_delay=system_delay,
             log_callback=self.log
         )
-        self.automation.open_login_page()
+        if not self.automation.open_login_page():
+            messagebox.showerror("브라우저 실행 실패",
+                                 "브라우저를 열지 못했습니다.\n실행 로그의 안내를 확인해주세요.",
+                                 parent=self.root)
+            return
+        # 선택한 브라우저가 안 돼서 다른 브라우저로 바뀐 경우 화면 선택도 맞춤
+        self.var_browser.set(self.automation.browser_type)
         self.log("브라우저에서 로그인을 진행해주세요.")
 
     def _launch_gologin_profiles(self):
@@ -1320,6 +1344,67 @@ class BandMacroApp:
         self.root.destroy()
 
 
+def run_selftest():
+    """exe 실행 환경 점검 (밴드매크로V2.5.exe --selftest).
+
+    필요한 부품을 하나씩 불러보고 결과를 system/selftest.txt에 남깁니다.
+    다른 PC에서 문제가 생겼을 때 원인을 찾는 용도입니다.
+    """
+    import platform
+    import traceback
+
+    results = []
+
+    def check(name, func):
+        try:
+            detail = func()
+            results.append(f"[OK]   {name}" + (f" - {detail}" if detail else ""))
+        except Exception as e:
+            results.append(f"[FAIL] {name} - {type(e).__name__}: {e}")
+            results.append("       " + traceback.format_exc().strip().splitlines()[-1])
+
+    def selenium_manager():
+        from selenium.webdriver.common.selenium_manager import SeleniumManager
+        return str(SeleniumManager()._get_binary())
+
+    def driver_for(browser):
+        from selenium.webdriver.common.selenium_manager import SeleniumManager
+        paths = SeleniumManager().binary_paths(["--browser", browser])
+        return f"driver={paths.get('driver_path')} browser={paths.get('browser_path')}"
+
+    def gologin_import():
+        from gologin import GoLogin
+        return GoLogin.__module__
+
+    def sample_write():
+        test_path = os.path.join(SYSTEM_DIR, "selftest_write.tmp")
+        with open(test_path, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(test_path)
+        return SYSTEM_DIR
+
+    check("OS", lambda: f"{platform.platform()} / {platform.machine()}")
+    check("실행 위치", lambda: BASE_DIR)
+    check("폴더 쓰기 권한", sample_write)
+    check("customtkinter", lambda: ctk.__version__)
+    check("Pillow", lambda: __import__("PIL").__version__)
+    check("pyautogui", lambda: __import__("pyautogui").__version__)
+    check("selenium", lambda: __import__("selenium").__version__)
+    check("Selenium Manager", selenium_manager)
+    check("크롬 드라이버", lambda: driver_for("chrome"))
+    check("엣지 드라이버", lambda: driver_for("MicrosoftEdge"))
+    check("gologin", gologin_import)
+    check("requests", lambda: __import__("requests").__version__)
+
+    report = "\n".join(results)
+    with open(os.path.join(SYSTEM_DIR, "selftest.txt"), "w", encoding="utf-8") as f:
+        f.write(report + "\n")
+    return report
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        run_selftest()
+        sys.exit(0)
     app = BandMacroApp()
     app.run()
