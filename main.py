@@ -1,6 +1,7 @@
 """네이버 밴드 자동 글쓰기 매크로 V2.5 - 메인 GUI (CustomTkinter)"""
 
 import os
+import re
 import sys
 import time
 import random
@@ -127,13 +128,24 @@ HELP_TEXTS = {
         "'방문이 뜸한 밴드' 폴더 안의 밴드도 함께 가져옵니다.\n"
         "광고(AD) 카드와 '이런 밴드는 어때요' 추천 밴드는 제외됩니다.\n\n"
         "※ ④에서 로그인을 마친 뒤에 눌러주세요.\n"
-        "※ 기존 목록은 지워지고 새로 채워집니다."),
+        "※ 기존 목록은 지워지고 새로 채워집니다.\n\n"
+        "[GoLogin 사용 시]\n"
+        "프로필마다 자기 계정의 가입 밴드를 가져와\n"
+        "'# [프로필명]' 아래에 나눠서 채웁니다."),
     "band_urls": ("밴드 URL 목록",
         "글을 올릴 밴드 주소 목록입니다. 한 줄에 하나씩 적습니다.\n"
         "예) https://band.us/band/12345678\n\n"
         "⑤로 자동으로 채우거나 직접 붙여넣을 수 있습니다.\n"
         "글을 올리고 싶지 않은 밴드는 줄을 지우면 됩니다.\n\n"
-        "※ https://band.us/band/ 로 시작하는 줄만 사용됩니다."),
+        "※ https://band.us/band/ 로 시작하는 줄만 사용됩니다.\n\n"
+        "[GoLogin 사용 시]\n"
+        "# [프로필명] 줄 아래의 주소가 그 프로필이 글을 쓸 밴드입니다.\n"
+        "   # [웹쿡]\n"
+        "   https://band.us/band/11111111\n"
+        "   # [rnjseor]\n"
+        "   https://band.us/band/22222222\n"
+        "줄을 지우면 그 프로필은 그 밴드에 쓰지 않습니다.\n"
+        "# [프로필명] 줄이 하나도 없으면 시작할 때 프로필마다 자동으로 가져옵니다."),
     "delay": ("글쓰기 딜레이 (초)",
         "한 밴드에 글을 올린 뒤 다음 밴드로 넘어가기 전 기다리는 시간입니다.\n\n"
         "숫자 하나(예: 1000) 또는 범위(예: 150~250)로 적습니다.\n"
@@ -184,10 +196,11 @@ HELP_TEXTS = {
         "1. 체크하면 나타나는 칸에 GoLogin API Key 입력\n"
         "2. 프로필 가져오기 → 사용할 프로필 선택\n"
         "3. ④ 로그인 하기 → 열린 브라우저마다 로그인\n"
-        "4. ⑦ 시작 → 모든 프로필이 동시에 글을 올림\n\n"
+        "4. ⑤ 밴드주소 가져오기 → URL 목록에 프로필별로 나눠 채워짐 (확인·수정 가능)\n"
+        "5. ⑦ 시작 → 모든 프로필이 동시에 글을 올림\n\n"
         "[프로필별 동작]\n"
-        "- 시작하면 프로필마다 자기 계정의 가입 밴드를 직접 가져와 거기에만 씁니다.\n"
-        "  (밴드 URL 목록과 ⑤ 버튼은 사용하지 않습니다)\n"
+        "- 프로필마다 자기 계정의 가입 밴드에만 씁니다.\n"
+        "  (⑤를 건너뛰면 시작할 때 자동으로 가져옵니다)\n"
         "- 같은 회차에 프로필끼리 같은 글을 쓰지 않도록 시작 글 폴더를 한 칸씩 엇갈립니다.\n"
         "  예) 프로필1은 폴더1부터, 프로필2는 폴더2부터 ...\n"
         "  ※ 글 폴더 수가 프로필 수보다 적으면 일부 프로필은 같은 글로 시작합니다."),
@@ -229,6 +242,36 @@ def gologin_profile_problem(gl):
                 "GoLogin 앱에서 이 프로필을 한 번 열었다 닫거나, 지문(fingerprint)을 새로 고쳐주세요. "
                 f"[응답 항목: {', '.join(list(data)[:12])}]")
     return f"브라우저 버전을 알 수 없는 userAgent입니다: {user_agent[:80]}"
+
+
+PROFILE_SECTION_RE = re.compile(r"^#\s*\[(.+)\]\s*$")
+
+
+def format_profile_sections(names, profile_urls):
+    """프로필별 URL 목록을 '# [프로필명]' 구역 텍스트로 만듭니다."""
+    lines = []
+    for name, urls in zip(names, profile_urls):
+        lines.append(f"# [{name}]")
+        lines.extend(urls)
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def parse_profile_sections(text):
+    """'# [프로필명]' 구역 텍스트를 [(프로필명, [URL...]), ...]로 읽습니다.
+
+    구역 머리말이 하나도 없으면 None을 반환합니다.
+    밴드 주소가 아닌 줄과 첫 구역 앞의 주소는 무시합니다.
+    """
+    sections = []
+    for line in text.splitlines():
+        line = line.strip()
+        header = PROFILE_SECTION_RE.match(line)
+        if header:
+            sections.append((header.group(1).strip(), []))
+        elif sections and line.startswith("https://band.us/band/"):
+            sections[-1][1].append(line)
+    return sections or None
 
 
 def assign_shared_bands(profile_urls):
@@ -728,14 +771,9 @@ class BandMacroApp:
         threading.Thread(target=_launch, daemon=True).start()
 
     def fetch_band_urls(self):
-        """가입된 밴드 URL을 가져옵니다."""
+        """가입된 밴드 URL을 가져옵니다. GoLogin 모드면 프로필별로 나눠서 채웁니다."""
         if self.var_use_gologin.get():
-            messagebox.showinfo(
-                "GoLogin 모드",
-                "GoLogin 모드에서는 시작을 누르면 프로필마다\n"
-                "자기 계정의 가입 밴드를 자동으로 가져옵니다.\n\n"
-                "밴드 URL 목록은 사용하지 않으니 비워두셔도 됩니다.",
-                parent=self.root)
+            self._fetch_gologin_band_urls()
             return
         if not self.automation or not self.automation.driver:
             self.log("먼저 로그인을 해주세요.")
@@ -750,6 +788,36 @@ class BandMacroApp:
                     self.text_urls.delete("1.0", "end")
                     self.text_urls.insert("1.0", "\n".join(urls))
                 self.root.after(0, _update)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _fetch_gologin_band_urls(self):
+        """GoLogin 프로필마다 가입 밴드를 가져와 URL 목록에 '# [프로필명]' 구역으로 채웁니다."""
+        if not getattr(self, "gologin_automations", None):
+            messagebox.showwarning("경고", "먼저 ④ 로그인 하기를 눌러 GoLogin 브라우저를 실행하고\n"
+                                           "각 브라우저에서 로그인해주세요.", parent=self.root)
+            return
+        if self.is_running or getattr(self, "gologin_fetching", False):
+            self.log("작업이 진행 중입니다. 끝난 뒤 다시 눌러주세요.")
+            return
+        self.gologin_fetching = True
+        dedupe = self.var_gologin_dedupe.get()  # tkinter 값은 메인 스레드에서 읽음
+        self.log("프로필별 밴드 주소 가져오는 중...")
+
+        def _work():
+            try:
+                profile_urls = self._collect_gologin_urls(dedupe)
+                text = format_profile_sections(self.gologin_names, profile_urls)
+                total = sum(len(u) for u in profile_urls)
+
+                def _update():
+                    self.text_urls.delete("1.0", "end")
+                    self.text_urls.insert("1.0", text)
+                self.root.after(0, _update)
+                self.log(f"프로필 {len(profile_urls)}개, 밴드 {total}개를 URL 목록에 채웠습니다. "
+                         "확인 후 ⑦ 시작을 눌러주세요.")
+            finally:
+                self.gologin_fetching = False
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -915,9 +983,17 @@ class BandMacroApp:
         """매크로를 시작합니다."""
         use_gologin = self.var_use_gologin.get()
 
-        # GoLogin 모드는 프로필마다 가입 밴드를 직접 가져오므로 URL 목록을 쓰지 않음
+        # GoLogin 모드: URL 목록에 '# [프로필명]' 구역이 있으면 그대로, 없으면 시작 시 프로필별 수집
         band_urls = []
-        if not use_gologin:
+        gologin_sections = None
+        gologin_dedupe = False
+        if use_gologin:
+            if getattr(self, "gologin_fetching", False):
+                messagebox.showwarning("경고", "프로필별 밴드 주소를 가져오는 중입니다. 끝난 뒤 시작해주세요.")
+                return
+            gologin_sections = parse_profile_sections(self.text_urls.get("1.0", "end"))
+            gologin_dedupe = self.var_gologin_dedupe.get()
+        else:
             urls_text = self.text_urls.get("1.0", "end").strip()
             if not urls_text:
                 messagebox.showwarning("경고", "밴드 URL을 입력해주세요.")
@@ -990,10 +1066,11 @@ class BandMacroApp:
             try:
                 if use_gologin:
                     self._run_gologin_macro(
-                        band_urls, content_folders,
+                        gologin_sections, content_folders,
                         repeat_count, delay_min, delay_max,
                         system_delay, final_delay_min, board_index,
-                        image_first, random_post, use_random_phrase)
+                        image_first, random_post, use_random_phrase,
+                        dedupe=gologin_dedupe)
                 else:
                     self._run_normal_macro(
                         self.automation, band_urls, content_folders,
@@ -1103,69 +1180,96 @@ class BandMacroApp:
                                image_first, random_post, use_random_phrase)
         self.log("\n매크로 완료!")
 
-    def _run_gologin_macro(self, band_urls, content_folders,
-                           repeat_count, delay_min, delay_max,
-                           system_delay, final_delay_min, board_index,
-                           image_first, random_post, use_random_phrase):
-        """GoLogin 멀티 프로필 매크로.
-
-        1단계: 프로필마다 자기 계정의 가입 밴드를 동시에 가져옴 (URL 목록은 사용 안 함)
-        2단계: (옵션) 여러 프로필이 함께 가입한 밴드는 한 프로필에만 배정
-        3단계: 프로필마다 글 폴더 시작 위치를 다르게 해서 동시에 글쓰기
-        """
-        automations = self.gologin_automations
+    # ──────────────────────────────────────────────
+    #  GoLogin 멀티 프로필
+    # ──────────────────────────────────────────────
+    def _gologin_prefixes(self):
+        """프로필별 로그 머리말([프로필명]) 목록."""
         names = getattr(self, "gologin_names", [])
-        prefixes = [f"[{names[i] if i < len(names) else f'브라우저{i + 1}'}]"
-                    for i in range(len(automations))]
-        dedupe = self.var_gologin_dedupe.get()
+        return [f"[{names[i] if i < len(names) else f'브라우저{i + 1}'}]"
+                for i in range(len(self.gologin_automations))]
 
-        self.log("=" * 40)
-        self.log(f"GoLogin 매크로 시작! 프로필 {len(automations)}개 (동시 실행)")
-        self.log(f"컨텐츠 폴더: {len(content_folders)}개")
-        self.log("=" * 40)
+    def _with_profile_log(self, automation, prefix, work):
+        """automation 로그에 프로필 이름을 붙인 채로 work()를 실행합니다."""
+        orig_log = automation.log
+        automation.log = lambda msg: self.log(f"{prefix} {msg}")
+        try:
+            return work()
+        except Exception as e:
+            automation.log(f"오류: {e}")
+        finally:
+            automation.log = orig_log
 
-        def _with_prefix(automation, idx, work):
-            """automation 로그에 프로필 이름을 붙인 채로 work()를 실행합니다."""
-            orig_log = automation.log
-            automation.log = lambda msg: self.log(f"{prefixes[idx]} {msg}")
-            try:
-                return work()
-            except Exception as e:
-                automation.log(f"오류: {e}")
-            finally:
-                automation.log = orig_log
+    def _run_per_profile(self, target):
+        """target(automation, idx)를 프로필마다 동시에 실행하고 모두 끝날 때까지 기다립니다."""
+        threads = [threading.Thread(target=target, args=(a, i), daemon=True)
+                   for i, a in enumerate(self.gologin_automations)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
-        def _run_all(target):
-            threads = [threading.Thread(target=target, args=(a, i), daemon=True)
-                       for i, a in enumerate(automations)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-
-        # 1단계: 프로필별 가입 밴드 수집
-        profile_urls = [[] for _ in automations]
+    def _collect_gologin_urls(self, dedupe):
+        """프로필마다 자기 계정의 가입 밴드를 동시에 가져오고,
+        옵션이 켜져 있으면 겹치는 밴드를 한 프로필에만 배정합니다."""
+        prefixes = self._gologin_prefixes()
+        profile_urls = [[] for _ in self.gologin_automations]
 
         def _fetch(automation, idx):
-            automation.log("가입한 밴드 주소 가져오는 중...")
-            profile_urls[idx] = _with_prefix(automation, idx, automation.fetch_band_urls) or []
+            self.log(f"{prefixes[idx]} 가입한 밴드 주소 가져오는 중...")
+            profile_urls[idx] = self._with_profile_log(
+                automation, prefixes[idx], automation.fetch_band_urls) or []
 
-        _run_all(_fetch)
-        if self.stop_event.is_set():
-            return
+        self._run_per_profile(_fetch)
 
-        # 2단계: 겹치는 밴드 배정
         if dedupe:
             assigned = assign_shared_bands(profile_urls)
             removed = sum(len(a) for a in profile_urls) - sum(len(a) for a in assigned)
             if removed:
                 self.log(f"여러 프로필이 함께 가입한 밴드 {removed}건을 한 프로필에만 배정했습니다.")
             profile_urls = assigned
+        return profile_urls
+
+    def _profile_urls_from_sections(self, sections):
+        """URL 목록의 '# [프로필명]' 구역을 실행 중인 프로필 순서에 맞춰 나눕니다."""
+        names = getattr(self, "gologin_names", [])
+        by_name = dict(sections)
+        for name, _ in sections:
+            if name not in names:
+                self.log(f"URL 목록의 [{name}] 구역은 실행 중인 프로필이 아니라서 건너뜁니다.")
+        return [by_name.get(name, []) for name in names]
+
+    def _run_gologin_macro(self, sections, content_folders,
+                           repeat_count, delay_min, delay_max,
+                           system_delay, final_delay_min, board_index,
+                           image_first, random_post, use_random_phrase, dedupe=False):
+        """GoLogin 멀티 프로필 매크로.
+
+        sections: URL 목록에서 읽은 [(프로필명, [URL...]), ...].
+                  ⑤로 채운 목록이 있으면 그대로 쓰고, 없으면(None) 지금 프로필별로 가져옴.
+        프로필마다 글 폴더 시작 위치를 다르게 해서 동시에 글쓰기.
+        """
+        prefixes = self._gologin_prefixes()
+
+        self.log("=" * 40)
+        self.log(f"GoLogin 매크로 시작! 프로필 {len(self.gologin_automations)}개 (동시 실행)")
+        self.log(f"컨텐츠 폴더: {len(content_folders)}개")
+        self.log("=" * 40)
+
+        if sections is None:
+            self.log("URL 목록에 프로필별 구역이 없어 지금 프로필마다 가입 밴드를 가져옵니다.")
+            profile_urls = self._collect_gologin_urls(dedupe)
+        else:
+            self.log("URL 목록의 프로필별 구역대로 글을 씁니다.")
+            profile_urls = self._profile_urls_from_sections(sections)
+        if self.stop_event.is_set():
+            return
+
         for idx, urls in enumerate(profile_urls):
             self.log(f"{prefixes[idx]} 글 쓸 밴드 {len(urls)}개, 시작 글 폴더 "
                      f"{os.path.basename(content_folders[idx % len(content_folders)])}")
 
-        # 3단계: 동시에 글쓰기 (프로필마다 시작 글 폴더를 한 칸씩 밀어서)
+        # 동시에 글쓰기 (프로필마다 시작 글 폴더를 한 칸씩 밀어서)
         def _post(automation, idx):
             urls = profile_urls[idx]
             if not urls:
@@ -1181,9 +1285,9 @@ class BandMacroApp:
                     content_offset=idx)
                 automation.log("완료!")
 
-            _with_prefix(automation, idx, work)
+            self._with_profile_log(automation, prefixes[idx], work)
 
-        _run_all(_post)
+        self._run_per_profile(_post)
         self.log("\n모든 프로필 매크로 완료!")
 
     def stop_macro(self):
