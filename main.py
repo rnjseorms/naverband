@@ -150,7 +150,7 @@ HELP_TEXTS = {
         "# [프로필명] 줄이 하나도 없으면 시작할 때 프로필마다 자동으로 가져옵니다."),
     "delay": ("글쓰기 딜레이 (초)",
         "한 밴드에 글을 올린 뒤 다음 밴드로 넘어가기 전 기다리는 시간입니다.\n\n"
-        "숫자 하나(예: 1000) 또는 범위(예: 150~250)로 적습니다.\n"
+        "숫자 하나(예: 600) 또는 범위(예: 500~700)로 적습니다.\n"
         "범위로 적으면 그 사이에서 매번 무작위로 정해집니다.\n\n"
         "※ 너무 짧으면 밴드에서 스팸으로 막힐 수 있습니다."),
     "repeat_count": ("총 반복 횟수 (회)",
@@ -188,10 +188,6 @@ HELP_TEXTS = {
         "체크하면 지정한 시간대에만 글을 올립니다.\n"
         "시간대 밖이면 다음 시작 시각까지 기다렸다가 자동으로 이어갑니다.\n\n"
         "예) 22시 ~ 06시 처럼 자정을 넘는 시간대도 가능합니다."),
-    "capture_area": ("영역 캡처",
-        "3초 뒤 전체 화면을 캡처해 system 폴더에 저장합니다.\n"
-        "(파일 이름: 선택한 브라우저_loading.png)\n\n"
-        "※ 현재 글쓰기 동작에는 사용되지 않습니다. 일반 사용 시 누를 필요가 없습니다."),
     "gologin": ("GoLogin 멀티 프로필",
         "여러 계정을 동시에 돌릴 때 사용하는 기능입니다. 일반 사용 시에는 끄세요.\n\n"
         "사용 순서\n"
@@ -333,12 +329,12 @@ class BandMacroApp:
         self.stop_event = threading.Event()
 
         # GUI 변수
-        self.var_delay = ctk.StringVar(value="1000")
+        self.var_delay = ctk.StringVar(value="600")
         self.var_image_first = ctk.BooleanVar(value=True)
         self.var_random_post = ctk.BooleanVar(value=False)
         self.var_repeat_count = ctk.StringVar(value="9999")
         self.var_system_delay = ctk.StringVar(value="1.5")
-        self.var_final_delay = ctk.StringVar(value="10")
+        self.var_final_delay = ctk.StringVar(value="2")
         self.var_random_phrase = ctk.BooleanVar(value=True)
         self.var_board_index = ctk.StringVar(value="2")
         self.var_browser = ctk.StringVar(value="chrome")
@@ -579,16 +575,6 @@ class BandMacroApp:
                         width=65, state="readonly").pack(side="left")
         ctk.CTkLabel(timer_row, text="분").pack(side="left", padx=3)
 
-        # 영역 캡처
-        capture_card = ctk.CTkFrame(main_frame, corner_radius=12)
-        capture_card.pack(fill="x", pady=(0, 8))
-
-        capture_row = ctk.CTkFrame(capture_card, fg_color="transparent")
-        capture_row.pack(fill="x", padx=12, pady=10)
-        ctk.CTkButton(capture_row, text="영역 캡처", width=90, height=28,
-                      fg_color="#7f8c8d", hover_color="#636e72",
-                      command=self.capture_area).pack(side="left")
-        self._help_button(capture_row, "capture_area")
 
     # ──────────────────────────────────────────────
     #  GUI 헬퍼 (순서 번호 / 도움말)
@@ -892,32 +878,6 @@ class BandMacroApp:
         except Exception as e:
             messagebox.showerror("오류", f"프로필 가져오기 실패: {e}")
 
-    def capture_area(self):
-        """영역 캡처 기능입니다."""
-        self.log("영역 캡처: 브라우저의 새로고침 버튼을 드래그하여 캡처해주세요.")
-
-        import pyautogui
-
-        self.root.iconify()
-        time.sleep(0.5)
-
-        try:
-            messagebox.showinfo("영역 캡처",
-                "확인을 누른 뒤 브라우저의 새로고침 버튼 영역을 마우스로 드래그해주세요.\n"
-                "3초 뒤 캡처가 시작됩니다.")
-            time.sleep(3)
-
-            screenshot = pyautogui.screenshot()
-            browser = self.var_browser.get()
-            save_name = f"{browser}_loading.png"
-            save_path = os.path.join(SYSTEM_DIR, save_name)
-            screenshot.save(save_path)
-            self.log(f"캡처 저장됨: {save_path}")
-        except Exception as e:
-            self.log(f"캡처 실패: {e}")
-        finally:
-            self.root.deiconify()
-
     # ──────────────────────────────────────────────
     #  작동시간 타이머
     # ──────────────────────────────────────────────
@@ -1055,7 +1015,7 @@ class BandMacroApp:
             delay_min = int(delay_parts[0])
             delay_max = int(delay_parts[1]) if len(delay_parts) > 1 else delay_min
         except ValueError:
-            delay_min, delay_max = 150, 250
+            delay_min, delay_max = 600, 600
 
         try:
             repeat_count = int(self.var_repeat_count.get())
@@ -1070,7 +1030,7 @@ class BandMacroApp:
         try:
             final_delay_min = int(self.var_final_delay.get())
         except ValueError:
-            final_delay_min = 10
+            final_delay_min = 2
 
         try:
             board_index = int(self.var_board_index.get())
@@ -1170,7 +1130,7 @@ class BandMacroApp:
                     # 성공 시에만 딜레이 적용
                     if not self.stop_event.is_set() and url_idx < len(band_urls) - 1:
                         delay = random.randint(delay_min, delay_max)
-                        self.log(f"딜레이 : {delay * 1000}")
+                        self.log(f"다음 밴드까지 {delay}초 대기")
                         for _ in range(delay):
                             if self.stop_event.is_set():
                                 break
