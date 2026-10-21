@@ -140,17 +140,28 @@ class BandAutomation:
             self.log(f"브라우저 시작 실패: {e}")
             return False
 
-    def connect_gologin(self, debugger_address):
-        """GoLogin 프로필의 debugger_address로 Selenium을 연결합니다."""
+    def connect_gologin(self, debugger_address, browser_path=None):
+        """GoLogin 프로필의 debugger_address로 Selenium을 연결합니다.
+
+        browser_path: GoLogin 브라우저(Orbita) 실행 파일. 주면 PC에 설치된 크롬 대신
+        이 브라우저 버전에 맞는 chromedriver를 받아 씁니다. (버전이 다르면 연결 실패)
+        """
         try:
             options = ChromeOptions()
             options.add_experimental_option("debuggerAddress", debugger_address)
+            if browser_path and os.path.exists(browser_path):
+                options.binary_location = browser_path
             self.driver = webdriver.Chrome(options=options)
-            self.driver.maximize_window()
+            try:
+                self.driver.maximize_window()
+            except Exception:
+                pass  # 창 크기 조절 실패는 연결과 무관
             self.log(f"GoLogin 프로필 연결 완료: {debugger_address}")
             return True
         except Exception as e:
-            self.log(f"GoLogin 연결 실패: {e}")
+            # Selenium 오류 문자열 뒤에 붙는 스택트레이스는 빼고 첫 줄만 기록
+            message = (getattr(e, "msg", None) or str(e)).strip().splitlines()[0]
+            self.log(f"GoLogin 연결 실패: {message}")
             return False
 
     def disconnect(self):

@@ -739,7 +739,8 @@ class BandMacroApp:
                         system_delay=float(self.var_system_delay.get()),
                         log_callback=self.log
                     )
-                    if automation.connect_gologin(debugger_address):
+                    browser_path = getattr(gl, "executablePath", "")
+                    if automation.connect_gologin(debugger_address, browser_path):
                         # 밴드 로그인 페이지로 이동 (JS로 강제)
                         time.sleep(2)
                         try:
