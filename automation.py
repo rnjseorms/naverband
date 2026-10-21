@@ -5,10 +5,7 @@ import re
 import json
 import urllib.request
 import time
-import random
-import subprocess
-import pyautogui
-pyautogui.FAILSAFE = False  # 자동화 중 마우스 모서리 이동 시 중단 방지
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -19,8 +16,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     TimeoutException, NoSuchElementException,
-    ElementClickInterceptedException, UnexpectedAlertPresentException,
-    NoAlertPresentException
+    UnexpectedAlertPresentException, NoAlertPresentException
 )
 
 BAND_LOGIN_URL = "https://auth.band.us/login_page"

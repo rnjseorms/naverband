@@ -35,7 +35,6 @@ a = Analysis(
         'selenium.common.exceptions',
         'gologin',
         'requests',
-        'pyautogui',
     ] + ctk_hidden + gl_hidden,
     hookspath=[],
     hooksconfig={},

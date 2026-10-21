@@ -6,7 +6,6 @@ import sys
 import time
 import random
 import threading
-import tkinter as tk
 from tkinter import messagebox
 from datetime import datetime
 
@@ -92,7 +91,7 @@ HELP_TEXTS = {
         "1. content 폴더 안에 글 1개당 폴더 1개를 만듭니다.\n"
         "   예) 01_가을이벤트, 02_신상품안내\n"
         "2. 각 폴더에 본문 .txt 파일 1개를 넣습니다.\n"
-        "   (메모장에서 UTF-8로 저장, txt가 여러 개면 이름순 마지막 1개만 사용)\n"
+        "   (메모장 저장 형식은 상관없음, txt가 여러 개면 이름순 마지막 1개만 사용)\n"
         "3. 함께 올릴 이미지(jpg, png, gif, webp 등)를 같은 폴더에 넣습니다.\n\n"
         "폴더는 이름순으로 하나씩 돌아가며 사용됩니다.\n"
         "(⑥의 '랜덤 글작성'을 켜면 무작위 순서)\n\n"
@@ -100,8 +99,12 @@ HELP_TEXTS = {
         "※ 이름이 _ 로 시작하는 폴더는 올라가지 않습니다. (샘플·보관용)"),
     "process_images": ("② 이미지 가공 (선택)",
         "content 안 모든 폴더의 이미지 중 500KB가 넘는 것을\n"
-        "최대 1280px, JPEG 형식으로 줄입니다.\n\n"
+        "최대 1280px, JPEG 형식으로 줄입니다.\n"
+        "500KB 이하 이미지는 그대로 둡니다. (0개 압축 = 줄일 이미지가 없음)\n\n"
         "※ 원본 파일에 그대로 덮어씁니다. 원본이 필요하면 따로 복사해 두세요.\n"
+        "※ png 등은 jpg로 바뀝니다. (예: 사진.png → 사진.jpg)\n"
+        "※ 휴대폰 세로 사진은 세로 방향 그대로 유지됩니다.\n"
+        "※ 움직이는 GIF는 멈춘 사진이 되지 않도록 건너뜁니다.\n"
         "※ 이미지 업로드가 느리거나 실패할 때 사용하세요."),
     "edit_random_phrases": ("③ 랜덤문구 작성 (선택)",
         "메모장으로 랜덤문구 파일을 엽니다.\n\n"
@@ -150,7 +153,7 @@ HELP_TEXTS = {
         "# [프로필명] 줄이 하나도 없으면 시작할 때 프로필마다 자동으로 가져옵니다."),
     "delay": ("글쓰기 딜레이 (초)",
         "한 밴드에 글을 올린 뒤 다음 밴드로 넘어가기 전 기다리는 시간입니다.\n\n"
-        "숫자 하나(예: 600) 또는 범위(예: 500~700)로 적습니다.\n"
+        "숫자 하나(예: 400) 또는 범위(예: 300~500)로 적습니다.\n"
         "범위로 적으면 그 사이에서 매번 무작위로 정해집니다.\n\n"
         "※ 너무 짧으면 밴드에서 스팸으로 막힐 수 있습니다."),
     "repeat_count": ("총 반복 횟수 (회)",
@@ -242,6 +245,24 @@ def gologin_profile_problem(gl):
     return f"브라우저 버전을 알 수 없는 userAgent입니다: {user_agent[:80]}"
 
 
+def read_text_file(path):
+    """txt 파일을 읽습니다. 사용자가 어떤 형식으로 저장했든 한글이 깨지지 않게 합니다.
+
+    UTF-16(메모장 '유니코드', BOM으로 판별) → UTF-8(BOM 포함) → CP949(메모장 'ANSI',
+    한글 윈도우 기본) 순으로 시도합니다.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16")
+    for encoding in ("utf-8-sig", "cp949"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def window_geometry(root, width, height):
     """창 크기를 화면 안에 들어오게 줄이고, 화면 위쪽 가운데에 둡니다.
 
@@ -329,12 +350,12 @@ class BandMacroApp:
         self.stop_event = threading.Event()
 
         # GUI 변수
-        self.var_delay = ctk.StringVar(value="600")
+        self.var_delay = ctk.StringVar(value="400")
         self.var_image_first = ctk.BooleanVar(value=True)
         self.var_random_post = ctk.BooleanVar(value=False)
         self.var_repeat_count = ctk.StringVar(value="9999")
         self.var_system_delay = ctk.StringVar(value="1.5")
-        self.var_final_delay = ctk.StringVar(value="2")
+        self.var_final_delay = ctk.StringVar(value="1")
         self.var_random_phrase = ctk.BooleanVar(value=True)
         self.var_board_index = ctk.StringVar(value="2")
         self.var_browser = ctk.StringVar(value="chrome")
@@ -941,8 +962,7 @@ class BandMacroApp:
             ext = os.path.splitext(filename)[1].lower()
 
             if ext == '.txt':
-                with open(filepath, "r", encoding="utf-8") as f:
-                    text_content = f.read().strip()
+                text_content = read_text_file(filepath).strip()
             elif ext in image_exts:
                 image_paths.append(filepath)
 
@@ -953,8 +973,8 @@ class BandMacroApp:
         if not os.path.exists(RANDOM_PHRASES_FILE):
             return ""
         try:
-            with open(RANDOM_PHRASES_FILE, "r", encoding="utf-8") as f:
-                lines = [line.strip() for line in f.readlines() if line.strip()]
+            text = read_text_file(RANDOM_PHRASES_FILE)
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
             if lines:
                 return random.choice(lines)
         except Exception:
@@ -1015,7 +1035,7 @@ class BandMacroApp:
             delay_min = int(delay_parts[0])
             delay_max = int(delay_parts[1]) if len(delay_parts) > 1 else delay_min
         except ValueError:
-            delay_min, delay_max = 600, 600
+            delay_min, delay_max = 400, 400
 
         try:
             repeat_count = int(self.var_repeat_count.get())
@@ -1030,7 +1050,7 @@ class BandMacroApp:
         try:
             final_delay_min = int(self.var_final_delay.get())
         except ValueError:
-            final_delay_min = 2
+            final_delay_min = 1
 
         try:
             board_index = int(self.var_board_index.get())
@@ -1301,6 +1321,18 @@ class BandMacroApp:
         if self.automation:
             self.automation.close()
 
+        # GoLogin 브라우저는 gl.stop()으로 닫아야 로그인 상태(쿠키)가 GoLogin 서버에 저장됨
+        gologin_instances = getattr(self, "gologin_instances", [])
+        if gologin_instances:
+            self.root.withdraw()
+            for automation in getattr(self, "gologin_automations", []):
+                automation.disconnect()
+            for gl in gologin_instances:
+                try:
+                    gl.stop()
+                except Exception:
+                    pass  # 이미 닫힌 브라우저 등은 무시하고 종료 진행
+
         self.root.destroy()
 
 
@@ -1348,7 +1380,6 @@ def run_selftest():
     check("폴더 쓰기 권한", sample_write)
     check("customtkinter", lambda: ctk.__version__)
     check("Pillow", lambda: __import__("PIL").__version__)
-    check("pyautogui", lambda: __import__("pyautogui").__version__)
     check("selenium", lambda: __import__("selenium").__version__)
     check("Selenium Manager", selenium_manager)
     check("크롬 드라이버", lambda: driver_for("chrome"))
